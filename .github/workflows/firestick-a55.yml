@@ -52,12 +52,12 @@ jobs:
           end = s.index('\n__m128i _mm_mulhrs_epi16_emu', start)
           hw_pmull = r'''__m128i _mm_clmulepi64_si128_emu(const __m128i &a, const __m128i &b, int imm)
           {
-              const uint64_t av = *((const uint64_t *)&a + (imm & 1));
-              const uint64_t bv = *((const uint64_t *)&b + ((imm & 0x10) >> 4));
-              const poly128_t prod = vmull_p64((poly64_t)av, (poly64_t)bv);
-              __m128i result;
-              memcpy(&result, &prod, sizeof(result));
-              return result;
+             uint64_t result[2];
+clmul64(*((uint64_t*)&a + (imm & 1)),
+        *((uint64_t*)&b + ((imm & 0x10) >> 4)),
+        result);
+return *(__m128i *)result;
+
           }
           '''
           p.write_text(s[:start] + hw_pmull + s[end:])
