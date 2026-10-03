@@ -24,7 +24,7 @@ jobs:
           p = Path('Makefile.am')
           s = p.read_text()
           old = 'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp'
-          new = 'SHARED_CPPFLAGS += -march=armv8-a+crypto -mcpu=cortex-a55 -mfpu=crypto-neon-fp-armv8 -mfloat-abi=softfp'
+          new = 'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp -mtune=cortex-a55'
           if old not in s:
               raise SystemExit('Expected ARMv7 flags not found in Makefile.am')
           p.write_text(s.replace(old, new, 1))
