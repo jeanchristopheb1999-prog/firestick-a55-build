@@ -24,7 +24,7 @@ jobs:
           p = Path('Makefile.am')
           s = p.read_text()
           old = 'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp'
-          new = 'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp -mtune=cortex-a55'
+          new = 'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp'
           if old not in s:
               raise SystemExit('Expected ARMv7 flags not found in Makefile.am')
           p.write_text(s.replace(old, new, 1))
@@ -62,11 +62,11 @@ jobs:
 
           }
           '''
-          p.write_text(s[:start] + hw_pmull + s[end:])
+          p.write_text(s)
           PY
 
           echo '--- Patched ARM flags ---'
-          grep -n 'SHARED_CPPFLAGS += -march=armv8' Makefile.am
+          grep -n 'SHARED_CPPFLAGS += -march=armv7-a' Makefile.am
           echo '--- Hardware AES/PMULL markers ---'
           grep -n 'aesenc\|clmul64' verus/armv7/haraka_portable.c verus/armv7/verus_clhash_portable.cpp || true
    
