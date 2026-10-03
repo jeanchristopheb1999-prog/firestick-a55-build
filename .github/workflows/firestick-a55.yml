@@ -52,6 +52,7 @@ jobs:
           end = s.index('\n__m128i _mm_mulhrs_epi16_emu', start)
           hw_pmull = r'''__m128i _mm_clmulepi64_si128_emu(const __m128i &a, const __m128i &b, int imm)
           {
+                  uint64_t result[2];
                     clmul64(*((uint64_t*)&a + (imm & 1)),
                   *((uint64_t*)&b + ((imm & 0x10) >> 4)),
                   result);
