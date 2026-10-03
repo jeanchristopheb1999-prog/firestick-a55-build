@@ -1,0 +1,100 @@
+name: Build FireStick A55 ccminer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout ccminer ARM source
+        uses: actions/checkout@v4
+        with:
+          repository: shmutalov/ccminer
+          ref: ARM
+
+      - name: Patch ARMv7 build for Cortex-A55 hardware crypto
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # 1) Target AArch32 on Cortex-A55 with ARMv8 crypto extensions.
+          p = Path('Makefile.am')
+          s = p.read_text()
+          old = 'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp'
+          new = 'SHARED_CPPFLAGS += -march=armv8-a+crypto -mcpu=cortex-a55 -mfpu=crypto-neon-fp-armv8 -mfloat-abi=softfp'
+          if old not in s:
+              raise SystemExit('Expected ARMv7 flags not found in Makefile.am')
+          p.write_text(s.replace(old, new, 1))
+
+          # 2) Replace software AES round in ARMv7 Haraka with ARMv8 AES instructions.
+          p = Path('verus/armv7/haraka_portable.c')
+          s = p.read_text()
+          start = s.index('void aesenc(unsigned char *s, const unsigned char *rk)')
+          end = s.index('\n// Simulate _mm_unpacklo_epi32', start)
+          hw_aes = r'''void aesenc(unsigned char *s, const unsigned char *rk)
+          {
+              uint8x16_t state = vld1q_u8((const uint8_t *)s);
+              const uint8x16_t zero = vdupq_n_u8(0);
+              state = vaesmcq_u8(vaeseq_u8(state, zero));
+              state = veorq_u8(state, vld1q_u8((const uint8_t *)rk));
+              vst1q_u8((uint8_t *)s, state);
+          }
+          '''
+          p.write_text(s[:start] + hw_aes + s[end:])
+
+          # 3) Replace software carry-less multiply with PMULL.
+          p = Path('verus/armv7/verus_clhash_portable.cpp')
+          s = p.read_text()
+          start = s.index('__m128i _mm_clmulepi64_si128_emu')
+          end = s.index('\n__m128i _mm_mulhrs_epi16_emu', start)
+          hw_pmull = r'''__m128i _mm_clmulepi64_si128_emu(const __m128i &a, const __m128i &b, int imm)
+          {
+              const uint64_t av = *((const uint64_t *)&a + (imm & 1));
+              const uint64_t bv = *((const uint64_t *)&b + ((imm & 0x10) >> 4));
+              const poly128_t prod = vmull_p64((poly64_t)av, (poly64_t)bv);
+              __m128i result;
+              memcpy(&result, &prod, sizeof(result));
+              return result;
+          }
+          '''
+          p.write_text(s[:start] + hw_pmull + s[end:])
+          PY
+
+          echo '--- Patched ARM flags ---'
+          grep -n 'SHARED_CPPFLAGS += -march=armv8' Makefile.am
+          echo '--- Hardware AES/PMULL markers ---'
+          grep -n 'vaeseq_u8\|vmull_p64' verus/armv7/haraka_portable.c verus/armv7/verus_clhash_portable.cpp
+
+      - name: Build Android ARMv7 image
+        run: docker build -t ccminer-android-a55 -f build.Dockerfile .
+
+      - name: Build only armeabi-v7a
+        shell: bash
+        run: |
+          mkdir -p build-output
+          docker run --rm -v "$PWD/build-output:/build/output" ccminer-android-a55 arm
+          find build-output -maxdepth 4 -type f -print
+
+      - name: Prepare Fire Stick package
+        shell: bash
+        run: |
+          mkdir -p dist
+          BIN="build-output/ccminer-armeabi-v7a/bin"
+          test -f "$BIN/ccminer"
+          cp "$BIN/ccminer" dist/ccminer-a55
+          test -f "$BIN/libc++_shared.so" && cp "$BIN/libc++_shared.so" dist/ || true
+          test -f "$BIN/libomp.so" && cp "$BIN/libomp.so" dist/ || true
+          chmod +x dist/ccminer-a55
+          file dist/ccminer-a55
+          sha256sum dist/* > dist/SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+
+      - name: Upload Fire Stick build
+        uses: actions/upload-artifact@v4
+        with:
+          name: firestick-a55-armeabi-v7a
+          path: dist/
+          if-no-files-found: error
