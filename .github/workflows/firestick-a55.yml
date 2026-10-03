@@ -67,6 +67,9 @@ jobs:
           grep -n 'SHARED_CPPFLAGS += -march=armv8' Makefile.am
           echo '--- Hardware AES/PMULL markers ---'
           grep -n 'vaeseq_u8\|vmull_p64' verus/armv7/haraka_portable.c verus/armv7/verus_clhash_portable.cpp
+   
+      - name: Make Android build script executable
+        run: chmod +x scripts/build-android-ccminer.sh
 
       - name: Build Android ARMv7 image
         run: docker build -t ccminer-android-a55 -f build.Dockerfile .
