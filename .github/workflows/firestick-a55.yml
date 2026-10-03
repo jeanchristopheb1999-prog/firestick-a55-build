@@ -80,6 +80,7 @@ jobs:
           mkdir -p build-output
           docker run --rm -v "$PWD/build-output:/build/output" ccminer-android-a55 arm
           find build-output -maxdepth 4 -type f -print
+          cat build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
 
       - name: Prepare Fire Stick package
         shell: bash
