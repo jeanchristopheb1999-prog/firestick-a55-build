@@ -12,7 +12,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: shmutalov/ccminer
-          ref: 258d12436df5
+          ref: 258d12436df56ad5301b4afdb6015b7bb39c294e
 
       - name: Patch ARMv7 build for Cortex-A55 hardware crypto
         shell: bash
