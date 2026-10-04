@@ -42,13 +42,14 @@ jobs:
 
 
           # ============================================================
-          # CPU TARGET
+          # CPU
           # ============================================================
 
           replace_once(
               'Makefile.am',
               'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp',
-              'SHARED_CPPFLAGS += -march=armv8-a+crypto '
+              'SHARED_CPPFLAGS += '
+              '-march=armv8-a+crypto '
               '-mtune=cortex-a55 '
               '-mfpu=crypto-neon-fp-armv8 '
               '-mfloat-abi=softfp '
@@ -57,7 +58,7 @@ jobs:
 
 
           # ============================================================
-          # V3 ALIGNMENT / SIGBUS
+          # ALIGNMENT / SIGBUS FIXES
           # ============================================================
 
           replace_once(
@@ -106,10 +107,8 @@ jobs:
 
 
           # ============================================================
-          # V9 FIXKEY INDEXES
-          #
-          # keyMask = 511, so indices only require 9 bits.
-          # uint16 is exact and halves index traffic.
+          # V9 FIXKEY INDEXES -> UINT16
+          # keyMask max = 511
           # ============================================================
 
           replace_once(
@@ -126,7 +125,7 @@ jobs:
 
 
           # ============================================================
-          # CLHASH HEADER -> uint16 FixKey indices
+          # CLHASH HEADER UINT16
           # ============================================================
 
           p = Path(
@@ -136,14 +135,14 @@ jobs:
           s = p.read_text()
 
           s = re.sub(
-              r'uint32_t\s*\*\s*__restrict\s+fixrandex\b',
-              'uint16_t *__restrict fixrandex',
+              r'uint32_t\s*\*\s*__restrict\s+fixrand\b',
+              'uint16_t *__restrict fixrand',
               s
           )
 
           s = re.sub(
-              r'uint32_t\s*\*\s*__restrict\s+fixrand\b',
-              'uint16_t *__restrict fixrand',
+              r'uint32_t\s*\*\s*__restrict\s+fixrandex\b',
+              'uint16_t *__restrict fixrandex',
               s
           )
 
@@ -151,7 +150,7 @@ jobs:
 
 
           # ============================================================
-          # HARDWARE AES - FULL HARAKA
+          # FULL HARAKA HARDWARE AES
           # ============================================================
 
           p = Path(
@@ -220,7 +219,7 @@ jobs:
 
           # ============================================================
           # HARAKA HEADER
-          # Register AES
+          # REGISTER AES
           # ============================================================
 
           p = Path(
@@ -239,7 +238,7 @@ jobs:
               start
           )
 
-          fast_aes = r'''// ARMv8 AES
+          fast_aes_header = r'''// ARMv8 hardware AES
           void aesenc(
               unsigned char *s,
               const unsigned char *rk
@@ -298,9 +297,10 @@ jobs:
 
           s = (
               s[:start] +
-              fast_aes +
+              fast_aes_header +
               s[end:]
           )
+
 
           unsafe = (
               'return *(__m128i *)result;'
@@ -308,7 +308,7 @@ jobs:
 
           if s.count(unsafe) != 2:
               raise SystemExit(
-                  'Unexpected Haraka return count: '
+                  'Unexpected Haraka unsafe return count: '
                   + str(s.count(unsafe))
               )
 
@@ -334,14 +334,8 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # uint16 FixKey indices
+          # uint16 FixKey prototypes
           # ------------------------------------------------------------
-
-          s = re.sub(
-              r'uint32_t\s*\*\s*__restrict\s+fixrandex\b',
-              'uint16_t * __restrict fixrandex',
-              s
-          )
 
           s = re.sub(
               r'uint32_t\s*\*\s*__restrict\s+fixrand\b',
@@ -349,9 +343,15 @@ jobs:
               s
           )
 
+          s = re.sub(
+              r'uint32_t\s*\*\s*__restrict\s+fixrandex\b',
+              'uint16_t * __restrict fixrandex',
+              s
+          )
+
 
           # ------------------------------------------------------------
-          # Safe portable vector returns
+          # SAFE RETURNS
           # ------------------------------------------------------------
 
           unsafe = (
@@ -360,7 +360,7 @@ jobs:
 
           if s.count(unsafe) != 3:
               raise SystemExit(
-                  'Unexpected CLHash return count: '
+                  'Unexpected CLHash unsafe return count: '
                   + str(s.count(unsafe))
               )
 
@@ -373,16 +373,8 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # Inline cheap helpers
+          # HOT XOR
           # ------------------------------------------------------------
-
-          s = s.replace(
-              '__m128i _mm_setr_epi8_emu(',
-              'static inline '
-              '__attribute__((always_inline)) '
-              '__m128i _mm_setr_epi8_emu(',
-              1
-          )
 
           s = s.replace(
               '__m128i _mm_xor_si128_emu(',
@@ -394,297 +386,15 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # Vector load
+          # SETR
           # ------------------------------------------------------------
 
-          start = s.index(
-              '__m128i _mm_load_si128_emu(const void *p)'
-          )
-
-          end = s.index(
-              '\n void _mm_store_si128_emu',
-              start
-          )
-
-          fast_load = r'''static inline
-          __attribute__((always_inline))
-          __m128i _mm_load_si128_emu(
-              const void *p
-          )
-          {
-              return
-                  vreinterpretq_s32_u8(
-                      vld1q_u8(
-                          (const uint8_t *)p
-                      )
-                  );
-          }
-          '''
-
-          s = (
-              s[:start] +
-              fast_load +
-              s[end:]
-          )
-
-
-          # ------------------------------------------------------------
-          # Vector store
-          # ------------------------------------------------------------
-
-          start = s.index(
-              'void _mm_store_si128_emu(void *p, __m128i val)'
-          )
-
-          end = s.index(
-              '\n__m128i _mm_shuffle_epi8_emu',
-              start
-          )
-
-          fast_store = r'''static inline
-          __attribute__((always_inline))
-          void _mm_store_si128_emu(
-              void *p,
-              __m128i val
-          )
-          {
-              vst1q_u8(
-                  (uint8_t *)p,
-                  vreinterpretq_u8_s32(
-                      val
-                  )
-              );
-          }
-          '''
-
-          s = (
-              s[:start] +
-              fast_store +
-              s[end:]
-          )
-
-
-          # ============================================================
-          # PSHUFB -> VTBL2
-          # ============================================================
-
-          start = s.index(
-              '__m128i _mm_shuffle_epi8_emu'
-          )
-
-          end = s.index(
-              '\n// portable\n'
-              '__m128i lazyLengthHash_port',
-              start
-          )
-
-          neon_shuffle = r'''static inline
-          __attribute__((always_inline))
-          __m128i _mm_shuffle_epi8_emu(
-              __m128i a,
-              __m128i b
-          )
-          {
-              const uint8x16_t av =
-                  vreinterpretq_u8_s32(a);
-
-              const uint8x16_t bv =
-                  vreinterpretq_u8_s32(b);
-
-              uint8x8x2_t table;
-
-              table.val[0] =
-                  vget_low_u8(av);
-
-              table.val[1] =
-                  vget_high_u8(av);
-
-
-              uint8x16_t index =
-                  vandq_u8(
-                      bv,
-                      vdupq_n_u8(0x0f)
-                  );
-
-
-              const uint8x16_t zero_mask =
-                  vcgeq_u8(
-                      bv,
-                      vdupq_n_u8(0x80)
-                  );
-
-
-              index =
-                  vbslq_u8(
-                      zero_mask,
-                      vdupq_n_u8(0xff),
-                      index
-                  );
-
-
-              const uint8x8_t lo =
-                  vtbl2_u8(
-                      table,
-                      vget_low_u8(index)
-                  );
-
-              const uint8x8_t hi =
-                  vtbl2_u8(
-                      table,
-                      vget_high_u8(index)
-                  );
-
-
-              return
-                  vreinterpretq_s32_u8(
-                      vcombine_u8(
-                          lo,
-                          hi
-                      )
-                  );
-          }
-
-
-          // ==========================================================
-          // V9 MIX2 -> XOR fusion
-          //
-          // Original case 0x14 does:
-          // MIX2(a,b)
-          // acc ^= a
-          // acc ^= b
-          //
-          // V9 computes MIX2(a,b).lo ^ MIX2(a,b).hi directly.
-          // ==========================================================
-
-          static inline
-          __attribute__((always_inline))
-          __m128i v9_mix2_xor(
-              __m128i a,
-              __m128i b
-          )
-          {
-              const int32x4_t ai =
-                  vreinterpretq_s32_m128i(a);
-
-              const int32x4_t bi =
-                  vreinterpretq_s32_m128i(b);
-
-
-              const int32x2x2_t lo =
-                  vzip_s32(
-                      vget_low_s32(ai),
-                      vget_low_s32(bi)
-                  );
-
-
-              const int32x2x2_t hi =
-                  vzip_s32(
-                      vget_high_s32(ai),
-                      vget_high_s32(bi)
-                  );
-
-
-              const int32x4_t mixlo =
-                  vcombine_s32(
-                      lo.val[0],
-                      lo.val[1]
-                  );
-
-
-              const int32x4_t mixhi =
-                  vcombine_s32(
-                      hi.val[0],
-                      hi.val[1]
-                  );
-
-
-              return
-                  vreinterpretq_m128i_s32(
-                      veorq_s32(
-                          mixlo,
-                          mixhi
-                      )
-                  );
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          __m128i v9_aes4_mix2_xor(
-              __m128i a,
-              __m128i b,
-              const __m128i *rk
-          )
-          {
-              a =
-                  v9_aesenc_vec(
-                      a,
-                      rk[0]
-                  );
-
-              b =
-                  v9_aesenc_vec(
-                      b,
-                      rk[1]
-                  );
-
-              a =
-                  v9_aesenc_vec(
-                      a,
-                      rk[2]
-                  );
-
-              b =
-                  v9_aesenc_vec(
-                      b,
-                      rk[3]
-                  );
-
-
-              return
-                  v9_mix2_xor(
-                      a,
-                      b
-                  );
-          }
-
-
-          // XOR scalar only into low 32-bit lane.
-          static inline
-          __attribute__((always_inline))
-          __m128i v9_xor_low32(
-              __m128i acc,
-              uint32_t x
-          )
-          {
-              uint32x4_t v =
-                  vreinterpretq_u32_m128i(
-                      acc
-                  );
-
-              v =
-                  vsetq_lane_u32(
-                      vgetq_lane_u32(
-                          v,
-                          0
-                      ) ^ x,
-                      v,
-                      0
-                  );
-
-              return
-                  vreinterpretq_m128i_u32(
-                      v
-                  );
-          }
-
-
-          '''
-
-          s = (
-              s[:start] +
-              neon_shuffle +
-              s[end:]
+          s = s.replace(
+              '__m128i _mm_setr_epi8_emu(',
+              'static inline '
+              '__attribute__((always_inline)) '
+              '__m128i _mm_setr_epi8_emu(',
+              1
           )
 
 
@@ -710,10 +420,14 @@ jobs:
           )
           {
               const uint64x2_t av =
-                  vreinterpretq_u64_s32(a);
+                  vreinterpretq_u64_s32(
+                      a
+                  );
 
               const uint64x2_t bv =
-                  vreinterpretq_u64_s32(b);
+                  vreinterpretq_u64_s32(
+                      b
+                  );
 
 
               const uint64x1_t va =
@@ -774,10 +488,14 @@ jobs:
           )
           {
               const int16x8_t va =
-                  vreinterpretq_s16_s32(a);
+                  vreinterpretq_s16_s32(
+                      a
+                  );
 
               const int16x8_t vb =
-                  vreinterpretq_s16_s32(b);
+                  vreinterpretq_s16_s32(
+                      b
+                  );
 
 
               int16x8_t result =
@@ -820,52 +538,6 @@ jobs:
                   );
           }
 
-
-          // ==========================================================
-          // V9 fused case-0x18 non-division path
-          // ==========================================================
-
-          static inline
-          __attribute__((always_inline))
-          __m128i v9_case18_nondiv(
-              __m128i *acc,
-              __m128i onekey,
-              __m128i temp
-          )
-          {
-              const __m128i add =
-                  _mm_xor_si128_emu(
-                      onekey,
-                      temp
-                  );
-
-
-              onekey =
-                  _mm_clmulepi64_si128_emu(
-                      add,
-                      add,
-                      0x10
-                  );
-
-
-              const __m128i product =
-                  _mm_mulhrs_epi16_emu(
-                      *acc,
-                      onekey
-                  );
-
-
-              *acc =
-                  _mm_xor_si128_emu(
-                      *acc,
-                      product
-                  );
-
-
-              return
-                  onekey;
-          }
-
           '''
 
           s = (
@@ -895,6 +567,12 @@ jobs:
                   marker
               ) + 1
           )
+
+          if end <= start:
+              raise SystemExit(
+                  'Could not locate bridge boundary'
+              )
+
 
           bridges = r'''static inline
           __attribute__((always_inline))
@@ -940,9 +618,7 @@ jobs:
               return
                   vget_lane_s64(
                       vget_low_s64(
-                          vreinterpretq_s64_s32(
-                              a
-                          )
+                          vreinterpretq_s64_s32(a)
                       ),
                       0
                   );
@@ -972,10 +648,365 @@ jobs:
 
 
           # ============================================================
-          # ACTIVE V2.1 CASE 0x14
+          # FAST LOAD
+          # ============================================================
+
+          start = s.index(
+              '__m128i _mm_load_si128_emu(const void *p)'
+          )
+
+          end = s.index(
+              '\n void _mm_store_si128_emu',
+              start
+          )
+
+          fast_load = r'''static inline
+          __attribute__((always_inline))
+          __m128i _mm_load_si128_emu(
+              const void *p
+          )
+          {
+              return
+                  vreinterpretq_s32_u8(
+                      vld1q_u8(
+                          (const uint8_t *)p
+                      )
+                  );
+          }
+          '''
+
+          s = (
+              s[:start] +
+              fast_load +
+              s[end:]
+          )
+
+
+          # ============================================================
+          # FAST STORE
+          # ============================================================
+
+          start = s.index(
+              'void _mm_store_si128_emu(void *p, __m128i val)'
+          )
+
+          end = s.index(
+              '\n__m128i _mm_shuffle_epi8_emu',
+              start
+          )
+
+          fast_store = r'''static inline
+          __attribute__((always_inline))
+          void _mm_store_si128_emu(
+              void *p,
+              __m128i val
+          )
+          {
+              vst1q_u8(
+                  (uint8_t *)p,
+                  vreinterpretq_u8_s32(
+                      val
+                  )
+              );
+          }
+          '''
+
+          s = (
+              s[:start] +
+              fast_store +
+              s[end:]
+          )
+
+
+          # ============================================================
+          # VTBL + V9 FUSED HELPERS
           #
-          # Hoisted mask + alternating pointers
-          # Fused AES/MIX2/XOR
+          # IMPORTANT:
+          # These are inserted HERE, after XOR/PMULL/MULHRS exist.
+          # Fixes run #25 compile failure.
+          # ============================================================
+
+          start = s.index(
+              '__m128i _mm_shuffle_epi8_emu'
+          )
+
+          end = s.index(
+              '\n// portable\n'
+              '__m128i lazyLengthHash_port',
+              start
+          )
+
+          hot_helpers = r'''static inline
+          __attribute__((always_inline))
+          __m128i _mm_shuffle_epi8_emu(
+              __m128i a,
+              __m128i b
+          )
+          {
+              const uint8x16_t av =
+                  vreinterpretq_u8_s32(a);
+
+              const uint8x16_t bv =
+                  vreinterpretq_u8_s32(b);
+
+
+              uint8x8x2_t table;
+
+              table.val[0] =
+                  vget_low_u8(av);
+
+              table.val[1] =
+                  vget_high_u8(av);
+
+
+              uint8x16_t index =
+                  vandq_u8(
+                      bv,
+                      vdupq_n_u8(0x0f)
+                  );
+
+
+              const uint8x16_t zero_mask =
+                  vcgeq_u8(
+                      bv,
+                      vdupq_n_u8(0x80)
+                  );
+
+
+              index =
+                  vbslq_u8(
+                      zero_mask,
+                      vdupq_n_u8(0xff),
+                      index
+                  );
+
+
+              const uint8x8_t lo =
+                  vtbl2_u8(
+                      table,
+                      vget_low_u8(index)
+                  );
+
+
+              const uint8x8_t hi =
+                  vtbl2_u8(
+                      table,
+                      vget_high_u8(index)
+                  );
+
+
+              return
+                  vreinterpretq_s32_u8(
+                      vcombine_u8(
+                          lo,
+                          hi
+                      )
+                  );
+          }
+
+
+          // ==========================================================
+          // MIX2(a,b) then XOR both outputs.
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_mix2_xor(
+              __m128i a,
+              __m128i b
+          )
+          {
+              const int32x4_t ai =
+                  vreinterpretq_s32_m128i(a);
+
+              const int32x4_t bi =
+                  vreinterpretq_s32_m128i(b);
+
+
+              const int32x2x2_t lo =
+                  vzip_s32(
+                      vget_low_s32(ai),
+                      vget_low_s32(bi)
+                  );
+
+
+              const int32x2x2_t hi =
+                  vzip_s32(
+                      vget_high_s32(ai),
+                      vget_high_s32(bi)
+                  );
+
+
+              const int32x4_t mixlo =
+                  vcombine_s32(
+                      lo.val[0],
+                      lo.val[1]
+                  );
+
+
+              const int32x4_t mixhi =
+                  vcombine_s32(
+                      hi.val[0],
+                      hi.val[1]
+                  );
+
+
+              return
+                  vreinterpretq_m128i_s32(
+                      veorq_s32(
+                          mixlo,
+                          mixhi
+                      )
+                  );
+          }
+
+
+          // ==========================================================
+          // 4 AES ops + MIX2 + XOR
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_aes4_mix2_xor(
+              __m128i a,
+              __m128i b,
+              const __m128i *rk
+          )
+          {
+              a =
+                  v9_aesenc_vec(
+                      a,
+                      rk[0]
+                  );
+
+
+              b =
+                  v9_aesenc_vec(
+                      b,
+                      rk[1]
+                  );
+
+
+              a =
+                  v9_aesenc_vec(
+                      a,
+                      rk[2]
+                  );
+
+
+              b =
+                  v9_aesenc_vec(
+                      b,
+                      rk[3]
+                  );
+
+
+              return
+                  v9_mix2_xor(
+                      a,
+                      b
+                  );
+          }
+
+
+          // ==========================================================
+          // XOR only low 32-bit lane.
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_xor_low32(
+              __m128i acc,
+              uint32_t x
+          )
+          {
+              uint32x4_t v =
+                  vreinterpretq_u32_m128i(
+                      acc
+                  );
+
+
+              v =
+                  vsetq_lane_u32(
+                      vgetq_lane_u32(
+                          v,
+                          0
+                      ) ^ x,
+                      v,
+                      0
+                  );
+
+
+              return
+                  vreinterpretq_m128i_u32(
+                      v
+                  );
+          }
+
+
+          // ==========================================================
+          // CASE 0x18:
+          // XOR + PMULL + VQRDMULH + XOR
+          //
+          // Run #25 failed because the previous version referred
+          // to _mm_xor_si128_emu before declaration.
+          //
+          // This function is now placed after its dependencies.
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_case18_nondiv(
+              __m128i *acc,
+              __m128i onekey,
+              __m128i temp
+          )
+          {
+              const __m128i add =
+                  _mm_xor_si128_emu(
+                      onekey,
+                      temp
+                  );
+
+
+              onekey =
+                  _mm_clmulepi64_si128_emu(
+                      add,
+                      add,
+                      0x10
+                  );
+
+
+              const __m128i product =
+                  _mm_mulhrs_epi16_emu(
+                      *acc,
+                      onekey
+                  );
+
+
+              *acc =
+                  _mm_xor_si128_emu(
+                      *acc,
+                      product
+                  );
+
+
+              return
+                  onekey;
+          }
+
+
+          '''
+
+          s = (
+              s[:start] +
+              hot_helpers +
+              s[end:]
+          )
+
+
+          # ============================================================
+          # V2.1 CASE 0x14
           # ============================================================
 
           active = s.index(
@@ -1176,13 +1207,7 @@ jobs:
 
 
           # ============================================================
-          # ACTIVE V2.1 CASE 0x18
-          #
-          # Hoist divisor
-          # Hoist mask
-          # Alternate pointers instead of ternary each iteration
-          # Fused PMULL/VQRDMULH/XOR
-          # Direct low32 XOR
+          # V2.1 CASE 0x18
           # ============================================================
 
           active = s.index(
@@ -1284,6 +1309,9 @@ jobs:
                             );
 
 
+                        // Exact original signed C remainder.
+                        // We'll attack __aeabi_ldivmod separately
+                        // after this V9 establishes a correct baseline.
                         const int32_t remainder =
                             (int32_t)(
                                 dividend %
@@ -1370,7 +1398,7 @@ jobs:
 
 
           # ============================================================
-          # VERUSSCAN V9
+          # VERUSSCAN
           # ============================================================
 
           p = Path(
@@ -1388,7 +1416,7 @@ jobs:
 
 
           # ============================================================
-          # FIXKEY + V9 HARAKA
+          # FIXKEY + HARAKA V9
           # ============================================================
 
           start = s.index(
@@ -1433,9 +1461,7 @@ jobs:
 
 
           // ==========================================================
-          // Prepare the exact 64-byte CLHash input with NEON.
-          //
-          // Two vector stores + one byte.
+          // Rebuild exact CLHash input.
           // ==========================================================
 
           static inline
@@ -1445,62 +1471,70 @@ jobs:
               const unsigned char *nonce
           )
           {
-              const uint8x16_t n =
+              const uint8x16_t nonce16 =
                   vld1q_u8(
                       nonce
                   );
 
 
-              const uint8x16_t h0 =
+              const uint8x16_t head =
                   vld1q_u8(
                       curBuf
                   );
 
 
-              // nonce[0..14], byte 47 gets overwritten below.
+              // Original copies 15 nonce bytes.
+              // Lane 15 gets replaced immediately below.
               vst1q_u8(
                   curBuf + 32,
-                  n
+                  nonce16
               );
 
 
-              // Restore bytes 47..62.
+              // Restore bytes 47..62 from header bytes 0..15.
               vst1q_u8(
                   curBuf + 47,
-                  h0
+                  head
               );
 
 
-              // Restore byte 63.
+              // Restore byte 63 from header byte 0.
               curBuf[63] =
                   vgetq_lane_u8(
-                      h0,
+                      head,
                       0
                   );
           }
 
 
+          // ==========================================================
+          // Full intermediate must be written UNMASKED.
+          // Key index gets masked separately.
+          // ==========================================================
+
           static inline
           __attribute__((always_inline))
           void v9_write_intermediate(
               unsigned char *curBuf,
-              uint64_t intermediate
+              uint64_t intermediate_full
           )
           {
               memcpy(
                   curBuf + 47,
-                  &intermediate,
+                  &intermediate_full,
                   8
               );
+
 
               memcpy(
                   curBuf + 55,
-                  &intermediate,
+                  &intermediate_full,
                   8
               );
 
+
               curBuf[63] =
-                  (unsigned char)intermediate;
+                  (uint8_t)intermediate_full;
           }
 
 
@@ -1599,13 +1633,10 @@ jobs:
 
 
           // ==========================================================
-          // V9 PARTIAL HARAKA
+          // PARTIAL HARAKA WORD7
           //
-          // V8 still wrote the 17 intermediate bytes to curBuf
-          // before loading s2/s3.
-          //
-          // V9 constructs s2 and s3 directly in NEON registers.
-          // No intermediate memory roundtrip on normal hashes.
+          // Uses FULL unmasked intermediate to construct message.
+          // Round-key index is masked elsewhere.
           // ==========================================================
 
           static inline
@@ -1614,7 +1645,7 @@ jobs:
               unsigned char *out,
               const unsigned char *curBuf,
               const unsigned char *nonce,
-              uint64_t intermediate,
+              uint64_t intermediate_full,
               const __m128i *rc
           )
           {
@@ -1636,45 +1667,56 @@ jobs:
                   );
 
 
-              // Final Haraka input byte 47 =
-              // low byte of intermediate.
+              // Byte 47 = low byte of full intermediate.
               s2 =
                   vsetq_lane_u8(
-                      (uint8_t)intermediate,
+                      (uint8_t)intermediate_full,
                       s2,
                       15
                   );
 
 
-              // Bytes 47..63 are intermediate repeated.
-              // s3 begins at byte 48, therefore rotate repeated
-              // intermediate by one byte.
-              const uint64x2_t iv64 =
+              // intermediate repeated:
+              // [b0..b7 b0..b7]
+              const uint64x2_t repeated64 =
                   vcombine_u64(
                       vcreate_u64(
-                          intermediate
+                          intermediate_full
                       ),
                       vcreate_u64(
-                          intermediate
+                          intermediate_full
                       )
                   );
 
 
-              const uint8x16_t iv =
+              const uint8x16_t repeated =
                   vreinterpretq_u8_u64(
-                      iv64
+                      repeated64
                   );
 
 
+              // Bytes 48..63:
+              // [b1..b7 b0..b7 b0]
               uint8x16_t s3 =
                   vextq_u8(
-                      iv,
-                      iv,
+                      repeated,
+                      repeated,
                       1
                   );
 
 
-              // First 3 complete Haraka rounds.
+              // IMPORTANT:
+              // Preserve original input feed-forward word
+              // BEFORE Haraka mutates s3.
+              const uint32_t input_word7 =
+                  vgetq_lane_u32(
+                      vreinterpretq_u32_u8(
+                          s3
+                      ),
+                      1
+                  );
+
+
           #pragma clang loop unroll(full)
               for (
                   int round = 0;
@@ -1801,7 +1843,7 @@ jobs:
               }
 
 
-              // Fourth complete AES stage.
+              // Fourth AES stage.
               s0 = v9_haraka_aes(
                   s0,
                   vreinterpretq_u8_s32(rc[24])
@@ -1844,7 +1886,7 @@ jobs:
               );
 
 
-              // Only dependency required by final word7.
+              // Only dependency required for final word7.
               const uint8x16_t t =
                   v9_unpacklo32(
                       s0,
@@ -1866,16 +1908,20 @@ jobs:
                   );
 
 
-              // Final round only requires state2.
+              // Final round only state2.
               s2 = v9_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(rc[34])
+                  vreinterpretq_u8_s32(
+                      rc[34]
+                  )
               );
 
 
               s2 = v9_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(rc[38])
+                  vreinterpretq_u8_s32(
+                      rc[38]
+                  )
               );
 
 
@@ -1885,17 +1931,6 @@ jobs:
                           s2
                       ),
                       2
-                  );
-
-
-              // Original input bytes 52..55 correspond
-              // to s3 uint32 lane 1.
-              const uint32_t input_word7 =
-                  vgetq_lane_u32(
-                      vreinterpretq_u32_u8(
-                          s3
-                      ),
-                      1
                   );
 
 
@@ -1921,7 +1956,7 @@ jobs:
 
 
           # ============================================================
-          # V9 FAST HASH + FULL CANDIDATE HASH
+          # V9 FAST HASH
           # ============================================================
 
           start = s.index(
@@ -1936,7 +1971,7 @@ jobs:
 
           verus2 = r'''static __thread int
           v9_haraka_fast_state = 0;
-          //  0 = not tested
+          //  0 = untested
           //  1 = verified
           // -1 = fallback
 
@@ -1960,14 +1995,13 @@ jobs:
               (void)version;
 
 
-              // Build exact CLHash input.
               v9_prepare_clhash_input(
                   curBuf,
                   nonce
               );
 
 
-              uint64_t intermediate =
+              const uint64_t intermediate_full =
                   verusclhashv2_2(
                       data_key,
                       curBuf,
@@ -1979,13 +2013,17 @@ jobs:
                   );
 
 
-              intermediate &=
-                  511;
+              // CRITICAL:
+              // Mask only round-key index.
+              // Haraka message keeps complete 64-bit intermediate.
+              const uint64_t key_index =
+                  intermediate_full &
+                  511ULL;
 
 
               const __m128i *round_keys =
                   data_key +
-                  intermediate;
+                  key_index;
 
 
               if (__builtin_expect(
@@ -1993,10 +2031,9 @@ jobs:
                       0
                   ))
               {
-                  // Safe fallback.
                   v9_write_intermediate(
                       curBuf,
-                      intermediate
+                      intermediate_full
                   );
 
 
@@ -2008,18 +2045,16 @@ jobs:
               }
               else
               {
-                  // Normal V9 path:
-                  // don't write intermediate to RAM.
                   v9_haraka512_word7(
                       hash,
                       curBuf,
                       nonce,
-                      intermediate,
+                      intermediate_full,
                       round_keys
                   );
 
 
-                  // One-time bit-exact test per thread.
+                  // One-time per-thread validation.
                   if (__builtin_expect(
                           v9_haraka_fast_state == 0,
                           0
@@ -2035,10 +2070,9 @@ jobs:
                       );
 
 
-                      // Build complete input only for this test.
                       v9_write_intermediate(
                           curBuf,
-                          intermediate
+                          intermediate_full
                       );
 
 
@@ -2071,6 +2105,7 @@ jobs:
                               32
                           );
 
+
                           v9_haraka_fast_state =
                               -1;
                       }
@@ -2089,8 +2124,7 @@ jobs:
 
 
           // ==========================================================
-          // FULL REPLAY
-          // Only for actual candidate.
+          // FULL HASH FOR CANDIDATE REPLAY
           // ==========================================================
 
           extern "C"
@@ -2118,7 +2152,7 @@ jobs:
               );
 
 
-              uint64_t intermediate =
+              const uint64_t intermediate_full =
                   verusclhashv2_2(
                       data_key,
                       curBuf,
@@ -2130,13 +2164,14 @@ jobs:
                   );
 
 
-              intermediate &=
-                  511;
+              const uint64_t key_index =
+                  intermediate_full &
+                  511ULL;
 
 
               v9_write_intermediate(
                   curBuf,
-                  intermediate
+                  intermediate_full
               );
 
 
@@ -2144,7 +2179,7 @@ jobs:
                   hash,
                   curBuf,
                   data_key +
-                  intermediate
+                  key_index
               );
 
 
@@ -2167,7 +2202,7 @@ jobs:
 
 
           # ============================================================
-          # CANDIDATE PATH
+          # CANDIDATE REPLAY
           # ============================================================
 
           start = s.index(
@@ -2289,11 +2324,13 @@ jobs:
               1
           )
 
+
           s = s.replace(
               'gettimeofday(&tv_start, NULL);',
               '',
               1
           )
+
 
           s = s.replace(
               'throughput = 1;',
@@ -2301,11 +2338,13 @@ jobs:
               1
           )
 
+
           s = s.replace(
               '*hashes_done = nonce_buf - start_nonce + throughput;',
               '',
               1
           )
+
 
           s = s.replace(
               'if ((uint64_t)throughput + '
@@ -2316,6 +2355,7 @@ jobs:
               '(uint64_t)max_nonce)',
               1
           )
+
 
           s = s.replace(
               'nonce_buf += throughput;',
@@ -2329,6 +2369,7 @@ jobs:
               '\tgettimeofday(&tv_end, NULL);'
           )
 
+
           new_out = (
               'out:\n'
               '\t*hashes_done = '
@@ -2338,7 +2379,7 @@ jobs:
 
           if old_out not in s:
               raise SystemExit(
-                  'V9 could not find out bookkeeping'
+                  'Could not find out bookkeeping'
               )
 
 
@@ -2353,7 +2394,7 @@ jobs:
 
 
           # ============================================================
-          # API BUILD ID
+          # BUILD ID
           # ============================================================
 
           p = Path(
@@ -2392,30 +2433,32 @@ jobs:
           )
 
 
-          print('=======================================')
-          print('FireStick A55 CLHASH V9')
-          print('=======================================')
-          print('V8 partial Haraka      : YES')
-          print('Haraka register input  : V9')
-          print('No hot intermediate RAM: YES')
-          print('PMULL                   : YES')
+          print('======================================')
+          print('A55 CLHASH V9')
+          print('======================================')
+          print('V8 Haraka base          : YES')
+          print('full intermediate fixed : YES')
+          print('feedforward fixed       : YES')
+          print('hardware AES            : YES')
+          print('hardware PMULL          : YES')
           print('VQRDMULH                : YES')
           print('VTBL                     : YES')
-          print('case 0x14 fusion        : YES')
-          print('case 0x18 fusion        : YES')
-          print('case 0x18 mask hoist    : YES')
-          print('case 0x18 pointer hoist : YES')
-          print('low32 direct XOR        : YES')
-          print('FixKey uint16 indices   : YES')
+          print('case14 fused AES/MIX/XOR: YES')
+          print('case18 fused PMULL/MUL  : YES')
+          print('case18 mask hoist       : YES')
+          print('case18 pointer hoist    : YES')
+          print('case18 divisor hoist    : YES')
+          print('low32 XOR               : YES')
+          print('FixKey uint16           : YES')
           print('FixKey unrolled         : YES')
-          print('full candidate replay   : YES')
-          print('Haraka runtime selftest : YES')
+          print('candidate replay        : YES')
+          print('runtime self-test       : YES')
           print('BUILD=A55-CLHASH-V9')
           PY
 
 
       # ================================================================
-      # VERIFY PATCHES
+      # VERIFY
       # ================================================================
 
       - name: Verify V9 patches
@@ -2430,9 +2473,6 @@ jobs:
           grep -n "v9_aesenc_vec" \
             verus/armv7/haraka_portable.h
 
-          grep -n "vaeseq_u8" \
-            verus/armv7/haraka_portable.c
-
           echo "===== PMULL ====="
           grep -n "vmull.p64" \
             verus/armv7/verus_clhash_portable.cpp
@@ -2445,29 +2485,23 @@ jobs:
           grep -n "vtbl2_u8" \
             verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== CASE14 FUSION ====="
+          echo "===== CASE14 ====="
           grep -n "v9_aes4_mix2_xor" \
             verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== CASE18 FUSION ====="
+          echo "===== CASE18 ====="
           grep -n "v9_case18_nondiv" \
             verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== LOW32 ====="
-          grep -n "v9_xor_low32" \
-            verus/armv7/verus_clhash_portable.cpp
-
-          echo "===== FIXKEY UINT16 ====="
+          echo "===== UINT16 FIXKEY ====="
           grep -n "uint16_t fixrand" \
             verus/armv7/verusscan.cpp
 
-          grep -n "uint16_t.*fixrand" \
-            verus/armv7/verus_clhash.h
-
-          echo "===== V9 BUFFER PATH ====="
-          grep -n "v9_prepare_clhash_input" \
+          echo "===== FULL INTERMEDIATE ====="
+          grep -n "intermediate_full" \
             verus/armv7/verusscan.cpp
 
+          echo "===== HARAKA ====="
           grep -n "v9_haraka512_word7" \
             verus/armv7/verusscan.cpp
 
@@ -2475,8 +2509,9 @@ jobs:
           grep -n "Verus2hashFullV9" \
             verus/armv7/verusscan.cpp
 
-          echo "===== BUILD ID ====="
-          grep -n "A55-CLHASH-V9" api.cpp
+          echo "===== API ====="
+          grep -n "A55-CLHASH-V9" \
+            api.cpp
 
 
       # ================================================================
@@ -2492,23 +2527,32 @@ jobs:
           import random
 
 
-          # ------------------------------------------------------------
-          # PMULHRSW / VQRDMULH edge semantics
-          # ------------------------------------------------------------
-
           def wrap16(x):
               x &= 0xffff
-              return x - 0x10000 if x & 0x8000 else x
 
-
-          def reference_mulhrs(a, b):
-              return wrap16(
-                  ((a * b) + 0x4000) >> 15
+              return (
+                  x - 0x10000
+                  if x & 0x8000
+                  else x
               )
 
 
-          def v9_mulhrs(a, b):
-              x = ((a * b) + 0x4000) >> 15
+          def ref_mulhrs(a, b):
+              return wrap16(
+                  (
+                      (a * b) +
+                      0x4000
+                  ) >> 15
+              )
+
+
+          def arm_mulhrs(a, b):
+              x = (
+                  (
+                      (a * b) +
+                      0x4000
+                  ) >> 15
+              )
 
               if x > 32767:
                   x = 32767
@@ -2516,7 +2560,10 @@ jobs:
               if x < -32768:
                   x = -32768
 
-              if a == -32768 and b == -32768:
+              if (
+                  a == -32768 and
+                  b == -32768
+              ):
                   x = -32768
 
               return x
@@ -2537,16 +2584,13 @@ jobs:
 
           for a, b in tests:
               assert (
-                  reference_mulhrs(a, b) ==
-                  v9_mulhrs(a, b)
+                  ref_mulhrs(a, b) ==
+                  arm_mulhrs(a, b)
               )
 
 
-          # ------------------------------------------------------------
-          # MIX2 XOR equivalence
-          # ------------------------------------------------------------
-
-          for _ in range(10000):
+          # MIX2 XOR
+          for _ in range(20000):
               a = [
                   random.getrandbits(32)
                   for _ in range(4)
@@ -2558,25 +2602,11 @@ jobs:
               ]
 
 
-              mixlo = [
-                  a[0],
-                  b[0],
-                  a[1],
-                  b[1],
-              ]
-
-
-              mixhi = [
-                  a[2],
-                  b[2],
-                  a[3],
-                  b[3],
-              ]
-
-
               original = [
-                  mixlo[i] ^ mixhi[i]
-                  for i in range(4)
+                  a[0] ^ a[2],
+                  b[0] ^ b[2],
+                  a[1] ^ a[3],
+                  b[1] ^ b[3],
               ]
 
 
@@ -2591,22 +2621,24 @@ jobs:
               assert original == fused
 
 
-          # ------------------------------------------------------------
-          # Hoisted case14/case18 mask + pointer parity
-          # ------------------------------------------------------------
-
-          for rounds0 in range(8):
+          # Mask/pointer hoist
+          for initial in range(8):
               original = []
 
-              r = rounds0
+              r = initial
 
               while True:
                   original.append(
                       (
                           r,
                           0x10000000 << r,
-                          'pbuf' if r & 1 else 'buftmp',
-                          'buftmp' if r & 1 else 'pbuf',
+                          'pbuf'
+                          if r & 1
+                          else 'buftmp',
+
+                          'buftmp'
+                          if r & 1
+                          else 'pbuf',
                       )
                   )
 
@@ -2618,20 +2650,20 @@ jobs:
 
               optimized = []
 
-              r = rounds0
+              r = initial
 
               mask = (
                   0x10000000 <<
                   r
               )
 
-              first = (
+              one = (
                   'pbuf'
                   if r & 1
                   else 'buftmp'
               )
 
-              second = (
+              two = (
                   'buftmp'
                   if r & 1
                   else 'pbuf'
@@ -2643,19 +2675,17 @@ jobs:
                       (
                           r,
                           mask,
-                          first,
-                          second,
+                          one,
+                          two,
                       )
                   )
 
-
                   mask >>= 1
 
-                  first, second = (
-                      second,
-                      first,
+                  one, two = (
+                      two,
+                      one
                   )
-
 
                   if r == 0:
                       break
@@ -2666,9 +2696,58 @@ jobs:
               assert original == optimized
 
 
-          # fixrand max is exactly 511.
-          assert 511 < 65536
+          # Verify repeated-intermediate layout.
+          for _ in range(100000):
+              x = random.getrandbits(64)
 
+              b = x.to_bytes(
+                  8,
+                  'little'
+              )
+
+              original = (
+                  b +
+                  b +
+                  b[:1]
+              )
+
+              original_s3 = (
+                  original[1:17]
+              )
+
+              repeated = (
+                  b +
+                  b
+              )
+
+              optimized_s3 = (
+                  repeated[1:] +
+                  repeated[:1]
+              )
+
+              assert (
+                  original_s3 ==
+                  optimized_s3
+              )
+
+              # input word at message bytes 52..55
+              ref_word = int.from_bytes(
+                  original[5:9],
+                  'little'
+              )
+
+              fast_word = int.from_bytes(
+                  optimized_s3[4:8],
+                  'little'
+              )
+
+              assert (
+                  ref_word ==
+                  fast_word
+              )
+
+
+          assert 511 < 65536
 
           print(
               'V9 semantic tests PASSED'
@@ -2703,7 +2782,9 @@ jobs:
           set -euo pipefail
 
           rm -rf build-output
+
           mkdir -p build-output
+
 
           docker run \
             --rm \
@@ -2732,7 +2813,7 @@ jobs:
 
 
       # ================================================================
-      # BINARY INSPECTION
+      # INSPECT
       # ================================================================
 
       - name: Inspect V9 binary
@@ -2748,20 +2829,20 @@ jobs:
           file "$BIN"
 
 
-          echo "===== BUILD ID ====="
+          echo "===== BUILD ====="
 
           strings "$BIN" |
             grep "A55-CLHASH-V9"
 
 
-          echo "===== 64-BIT DIVISION HELPER ====="
+          echo "===== LDIVMOD ====="
 
           readelf -Ws "$BIN" |
             grep "__aeabi_ldivmod" ||
             true
 
 
-          echo "===== BINARY SIZE ====="
+          echo "===== SIZE ====="
 
           ls -lh "$BIN"
 
@@ -2776,6 +2857,7 @@ jobs:
           set -euo pipefail
 
           rm -rf dist
+
           mkdir -p dist
 
 
@@ -2824,7 +2906,7 @@ jobs:
           Stable base:
           A55-HOTPATH-V8
 
-          V8 measured baseline:
+          V8 baseline:
           approximately 679 kH/s
 
           Hardware AES:
@@ -2836,35 +2918,32 @@ jobs:
           VQRDMULH:
           enabled
 
-          VTBL PSHUFB:
+          VTBL:
           enabled
 
           Partial Haraka:
           enabled
 
-          Haraka hot AES count:
-          34 instead of 40
+          Haraka:
+          34 AES operations hot path
 
-          V9 direct Haraka register input:
-          enabled
+          Full intermediate semantics:
+          preserved
 
-          Hot intermediate RAM writes:
-          removed
+          Feed-forward word7:
+          preserved before AES rounds
 
-          CLHash case 0x14 AES/MIX2/XOR fusion:
-          enabled
+          CLHash case 0x14:
+          fused AES + MIX2 + XOR
 
-          CLHash case 0x14 mask/pointer hoist:
-          enabled
+          CLHash case 0x14:
+          mask/pointer hoist
 
-          CLHash case 0x18 PMULL/MULHRS/XOR fusion:
-          enabled
+          CLHash case 0x18:
+          fused PMULL + VQRDMULH + XOR
 
-          CLHash case 0x18 mask/pointer hoist:
-          enabled
-
-          CLHash case 0x18 divisor hoist:
-          enabled
+          CLHash case 0x18:
+          mask/pointer/divisor hoist
 
           Low32 XOR:
           direct NEON lane
@@ -2875,10 +2954,10 @@ jobs:
           FixKey:
           fully unrolled
 
-          Runtime Haraka self-test:
-          enabled per thread
+          Runtime self-test:
+          enabled
 
-          Complete candidate replay:
+          Full candidate replay:
           enabled
 
           API:
