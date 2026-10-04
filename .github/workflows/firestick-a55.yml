@@ -13,7 +13,7 @@ jobs:
     steps:
 
       # ==============================================================
-      # HISTORICAL BASES REQUIRED BY THE PROVEN V13 #36 PATCH
+      # BASES EXACTES
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -23,14 +23,12 @@ jobs:
           ref: 6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0
           path: v8-base
 
-
       - name: Checkout exact V10 workflow
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
           ref: 73446a48e954bcc579c302d5a01e3dfb71b2bd30
           path: v10-base
-
 
       - name: Checkout V11 development base
         uses: actions/checkout@v4
@@ -39,7 +37,6 @@ jobs:
           ref: 7f92ff0f8788f54781704ce8414915584450bd78
           path: v11-base
 
-
       - name: Checkout exact V11 builder
         uses: actions/checkout@v4
         with:
@@ -47,38 +44,30 @@ jobs:
           ref: c98f006a974ccee5be50ea5982311c05774432bc
           path: v11-builder
 
-
-      - name: Checkout V12 source patch base
+      - name: Checkout V12 source base
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
           ref: 50ac3037b54d6f045e534af8b04a2ddf571ae844
           path: v12-base
 
-
-      - name: Checkout exact successful V12 builder
+      - name: Checkout exact V12 35 builder
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
           ref: 5f9aa55a96369f8da93561e0c839ed81bc3e15c2
           path: v12-builder
 
-
-      # ==============================================================
-      # EXACT FAILED V13 #36 WORKFLOW
-      #
-      # Its V13 patch + semantic model already passed.
-      # ==============================================================
-
-      - name: Checkout proven V13 36 patch
+      # V13 #36:
+      # le patch SHADOWKEY et son modèle ont déjà PASSÉ.
+      - name: Checkout proven V13 36
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
           ref: 3d9da4b5b0a837975e23c1ef38c37e28b04331f7
           path: v13-base
 
-
-      - name: Checkout pinned ccminer source
+      - name: Checkout pinned ccminer
         uses: actions/checkout@v4
         with:
           repository: shmutalov/ccminer
@@ -87,10 +76,10 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY THE EXACT PATCHES THAT PASSED IN RUN #36
+      # REJOUE EXACTEMENT LE V13 #36
       # ==============================================================
 
-      - name: Replay proven V13 source
+      - name: Replay proven V13 36
         shell: bash
         run: |
           set -euo pipefail
@@ -102,45 +91,33 @@ jobs:
           import textwrap
 
 
-          workflow = Path(
+          wf = Path(
               '../v13-base/.github/workflows/firestick-a55.yml'
           ).read_text()
 
 
-          lines = workflow.splitlines()
-
+          lines = wf.splitlines()
           blocks = []
 
           i = 0
-
 
           while i < len(lines):
 
               if lines[i].strip() == "python3 - <<'PY'":
 
                   start = i + 1
-
                   end = None
 
-
-                  for j in range(
-                      start,
-                      len(lines)
-                  ):
+                  for j in range(start, len(lines)):
 
                       if lines[j].strip() == 'PY':
-
                           end = j
-
                           break
 
-
                   if end is None:
-
                       raise SystemExit(
-                          'Unterminated V13 Python block'
+                          'Unterminated V13 block'
                       )
-
 
                   blocks.append(
                       textwrap.dedent(
@@ -150,81 +127,40 @@ jobs:
                       )
                   )
 
-
                   i = end + 1
 
               else:
-
                   i += 1
 
 
           if len(blocks) != 3:
 
               raise SystemExit(
-                  'Expected exactly 3 V13 blocks, found '
+                  'Expected 3 V13 blocks, found '
                   + str(len(blocks))
               )
 
 
-          # ----------------------------------------------------------
-          # Block 0:
-          # exact V12 #35 reconstruction
-          # ----------------------------------------------------------
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'REPLAY EXACT V12 #35'
-          )
-
-          print(
-              '======================================'
-          )
+          print('==============================')
+          print('REPLAY V12 #35')
+          print('==============================')
 
 
           exec(
               compile(
                   blocks[0],
-                  'v13-replay-v12.py',
+                  'v13-v12-base.py',
                   'exec'
               ),
               {
-                  '__name__': '__main__',
+                  '__name__': '__main__'
               }
           )
 
 
-          if (
-              'BUILD=A55-QCFAST-V12'
-              not in
-              Path('api.cpp').read_text()
-          ):
-
-              raise SystemExit(
-                  'V12 replay failed'
-              )
-
-
-          # ----------------------------------------------------------
-          # Block 1:
-          # SHADOWKEY V13 source patch
-          #
-          # This PASSED in run #36.
-          # ----------------------------------------------------------
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'REPLAY PROVEN SHADOWKEY V13 PATCH'
-          )
-
-          print(
-              '======================================'
-          )
+          print('==============================')
+          print('REPLAY SHADOWKEY V13')
+          print('==============================')
 
 
           exec(
@@ -234,40 +170,14 @@ jobs:
                   'exec'
               ),
               {
-                  '__name__': '__main__',
+                  '__name__': '__main__'
               }
           )
 
 
-          if (
-              'BUILD=A55-SHADOWKEY-V13'
-              not in
-              Path('api.cpp').read_text()
-          ):
-
-              raise SystemExit(
-                  'V13 source replay failed'
-              )
-
-
-          # ----------------------------------------------------------
-          # Block 2:
-          # SHADOWKEY semantic model
-          #
-          # This also PASSED in run #36.
-          # ----------------------------------------------------------
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'REPLAY V13 MODEL TESTS'
-          )
-
-          print(
-              '======================================'
-          )
+          print('==============================')
+          print('REPLAY V13 MODEL')
+          print('==============================')
 
 
           exec(
@@ -277,33 +187,35 @@ jobs:
                   'exec'
               ),
               {
-                  '__name__': '__main__',
+                  '__name__': '__main__'
               }
           )
 
 
-          print(
-              '======================================'
-          )
+          api = Path(
+              'api.cpp'
+          ).read_text()
 
-          print(
-              'PROVEN V13 #36 SOURCE REPLAY: PASS'
-          )
 
-          print(
-              '======================================'
-          )
+          if 'BUILD=A55-SHADOWKEY-V13' not in api:
+
+              raise SystemExit(
+                  'V13 replay failed'
+              )
+
+
+          print('==============================')
+          print('V13 #36 REPLAY: PASS')
+          print('==============================')
 
           PY
 
 
       # ==============================================================
-      # COMPILE FIXES
-      #
-      # Fix ONLY the 3 compiler failures from V13 run #36.
+      # CORRECTIONS STRUCTURELLES
       # ==============================================================
 
-      - name: Fix V13 compile ordering
+      - name: Repair V13 compile issues
         shell: bash
         run: |
           set -euo pipefail
@@ -316,18 +228,13 @@ jobs:
 
 
           # ==========================================================
-          # FIX 1
+          # FIX A
           #
-          # Run #36 inserted:
+          # Le V13 #36 avait inséré la copie immutable après
+          # la DEFINITION de GenNewCLKey au lieu de son APPEL.
           #
-          #   memcpy(data_key_base, data_key, VERUS_KEY_SIZE)
-          #
-          # after the FIRST "GenNewCLKey(" in the file.
-          #
-          # That was the FUNCTION DEFINITION near the top,
-          # not the call inside scanhash_verus().
-          #
-          # Remove it and insert it after the REAL call.
+          # On supprime toute copie existante et on en place
+          # exactement une dans scanhash_verus après l'appel réel.
           # ==========================================================
 
           scan_path = Path(
@@ -338,7 +245,7 @@ jobs:
           scan = scan_path.read_text()
 
 
-          misplaced_pattern = re.compile(
+          copy_regex = re.compile(
               r'\s*memcpy\s*\(\s*'
               r'data_key_base\s*,\s*'
               r'data_key\s*,\s*'
@@ -348,36 +255,30 @@ jobs:
           )
 
 
-          matches = list(
-              misplaced_pattern.finditer(
-                  scan
-              )
+          scan, removed = copy_regex.subn(
+              '',
+              scan
           )
 
 
-          if len(matches) != 1:
+          print(
+              'Old base-key copies removed:',
+              removed
+          )
+
+
+          if removed < 1:
 
               raise SystemExit(
-                  'Expected exactly one misplaced base-key memcpy, found '
-                  + str(len(matches))
+                  'No V13 base-key memcpy found'
               )
 
 
-          # Remove incorrect occurrence.
-          scan = misplaced_pattern.sub(
-              '',
-              scan,
-              count=1
-          )
-
-
-          # Find actual mining function.
           scan_func = scan.index(
               'extern "C" int scanhash_verus'
           )
 
 
-          # Find REAL GenNewCLKey CALL only after scanhash starts.
           gen_call = scan.index(
               'GenNewCLKey(',
               scan_func
@@ -390,15 +291,9 @@ jobs:
           ) + 1
 
 
-          correct_copy = r'''
+          immutable_copy = '''
 
-              // ======================================================
-              // V13 IMMUTABLE SHADOW KEY
-              //
-              // Generated once per work unit.
-              // Never mutated inside nonce hot loop.
-              // ======================================================
-
+              // V13 immutable pristine CLHash key.
               memcpy(
                   data_key_base,
                   data_key,
@@ -409,7 +304,7 @@ jobs:
 
           scan = (
               scan[:gen_end]
-              + correct_copy
+              + immutable_copy
               + scan[gen_end:]
           )
 
@@ -420,28 +315,33 @@ jobs:
 
 
           # ==========================================================
-          # VERIFY FIX #1
+          # ROBUST VALIDATION — NO WHITESPACE ASSUMPTIONS
           # ==========================================================
 
           scan = scan_path.read_text()
 
 
+          matches = list(
+              copy_regex.finditer(
+                  scan
+              )
+          )
+
+
+          if len(matches) != 1:
+
+              raise SystemExit(
+                  'Expected exactly one final base-key copy, found '
+                  + str(len(matches))
+              )
+
+
+          final_copy_pos = matches[0].start()
+
+
           scan_func = scan.index(
               'extern "C" int scanhash_verus'
           )
-
-
-          copy_pos = scan.index(
-              'memcpy(\n'
-              '                  data_key_base'
-          )
-
-
-          if copy_pos < scan_func:
-
-              raise SystemExit(
-                  'Immutable-key memcpy is still outside scanhash'
-              )
 
 
           gen_call = scan.index(
@@ -450,29 +350,45 @@ jobs:
           )
 
 
-          if copy_pos < gen_call:
+          if final_copy_pos <= scan_func:
 
               raise SystemExit(
-                  'Immutable-key copy occurs before GenNewCLKey'
+                  'Base-key copy outside scanhash'
+              )
+
+
+          if final_copy_pos <= gen_call:
+
+              raise SystemExit(
+                  'Base-key copy before GenNewCLKey call'
+              )
+
+
+          data_key_base_pos = scan.index(
+              'data_key_base',
+              scan_func
+          )
+
+
+          if data_key_base_pos >= final_copy_pos:
+
+              raise SystemExit(
+                  'data_key_base declared too late'
               )
 
 
           print(
-              'FIX 1 PASS: base key copy moved into scanhash'
+              'FIX A PASS: immutable key copy correctly placed'
           )
 
 
           # ==========================================================
-          # FIX 2 + FIX 3
+          # FIX B
           #
-          # V13 wrapper was emitted before:
+          # verus_clhash_portable.cpp appelle verusclhashv2_2
+          # avant sa définition.
           #
-          #   verusclhashv2_2()
-          #   __...v13_shadow()
-          #
-          # Their definitions exist, but C++ needs declarations first.
-          #
-          # Add exact forward declarations before V13 wrapper.
+          # Utilise le VRAI header, qui contient déjà son prototype.
           # ==========================================================
 
           cl_path = Path(
@@ -482,6 +398,46 @@ jobs:
 
           cl = cl_path.read_text()
 
+
+          include_line = (
+              '#include "verus_clhash.h"'
+          )
+
+
+          if include_line not in cl:
+
+              marker = (
+                  '#include "haraka_portable.h"'
+              )
+
+
+              if marker not in cl:
+
+                  raise SystemExit(
+                      'haraka include marker missing'
+                  )
+
+
+              cl = cl.replace(
+                  marker,
+                  marker
+                  + '\n'
+                  + include_line,
+                  1
+              )
+
+
+          print(
+              'FIX B PASS: verus_clhash.h included'
+          )
+
+
+          # ==========================================================
+          # FIX C
+          #
+          # Le wrapper V13 appelle le core shadow avant sa définition.
+          # Ajoute seulement le prototype interne nécessaire.
+          # ==========================================================
 
           wrapper_token = (
               'uint64_t verusclhashv13_shadow('
@@ -493,6 +449,8 @@ jobs:
           )
 
 
+          # Trouve le "extern C" qui appartient au wrapper,
+          # seulement s'il est vraiment juste devant.
           extern_pos = cl.rfind(
               'extern "C"',
               0,
@@ -500,38 +458,23 @@ jobs:
           )
 
 
-          if extern_pos < 0:
-
-              declaration_pos = wrapper_pos
-
+          if (
+              extern_pos >= 0
+              and
+              wrapper_pos - extern_pos < 100
+          ):
+              insert_pos = extern_pos
           else:
+              insert_pos = wrapper_pos
 
-              declaration_pos = extern_pos
 
-
-          forward = r'''
+          prototype = r'''
 
           // ==========================================================
-          // SHADOWKEY V13 FORWARD DECLARATIONS
-          //
-          // Required because the optimized wrapper intentionally lives
-          // before these implementations in this translation unit.
+          // SHADOWKEY V13 INTERNAL FORWARD DECLARATION
           // ==========================================================
 
-          extern "C"
-          uint64_t verusclhashv2_2(
-              void *random,
-              const unsigned char buf[64],
-              uint64_t keyMask,
-              uint32_t * __restrict fixrand,
-              uint32_t * __restrict fixrandex,
-              __m128i *g_prand,
-              __m128i *g_prandex
-          );
-
-
-          static
-          __m128i
+          static __m128i
           __verusclmulwithoutreduction64alignedrepeat_v13_shadow(
               __m128i *randomsource,
               const __m128i buf[4],
@@ -544,11 +487,20 @@ jobs:
           '''
 
 
-          cl = (
-              cl[:declaration_pos]
-              + forward
-              + cl[declaration_pos:]
-          )
+          # Do not duplicate on accidental rerun.
+          prefix = cl[:wrapper_pos]
+
+
+          if (
+              '__verusclmulwithoutreduction64alignedrepeat_v13_shadow('
+              not in prefix
+          ):
+
+              cl = (
+                  cl[:insert_pos]
+                  + prototype
+                  + cl[insert_pos:]
+              )
 
 
           cl_path.write_text(
@@ -556,54 +508,71 @@ jobs:
           )
 
 
+          print(
+              'FIX C PASS: shadow core forward declared'
+          )
+
+
           # ==========================================================
-          # FINAL COMPILE-PREFLIGHT CHECKS
+          # FINAL STRUCTURAL PREFLIGHT
           # ==========================================================
 
           cl = cl_path.read_text()
 
 
+          if (
+              '#include "verus_clhash.h"'
+              not in cl
+          ):
+              raise SystemExit(
+                  'verus_clhash.h missing'
+              )
+
+
           wrapper_pos = cl.index(
-              wrapper_token
+              'uint64_t verusclhashv13_shadow('
           )
 
 
-          v2_decl = cl.index(
+          proto_pos = cl.index(
+              '__verusclmulwithoutreduction64alignedrepeat_v13_shadow('
+          )
+
+
+          if proto_pos >= wrapper_pos:
+
+              raise SystemExit(
+                  'Shadow prototype still after wrapper'
+              )
+
+
+          shadow_count = cl.count(
+              '__verusclmulwithoutreduction64alignedrepeat_v13_shadow('
+          )
+
+
+          # prototype + wrapper call + actual definition
+          if shadow_count < 3:
+
+              raise SystemExit(
+                  'Shadow symbol count too low: '
+                  + str(shadow_count)
+              )
+
+
+          # Ensure public v2.2 prototype now exists before wrapper
+          header = Path(
+              'verus/armv7/verus_clhash.h'
+          ).read_text()
+
+
+          if (
               'uint64_t verusclhashv2_2('
-          )
-
-
-          shadow_decl = cl.index(
-              '__verusclmulwithoutreduction64alignedrepeat_v13_shadow('
-          )
-
-
-          if v2_decl > wrapper_pos:
+              not in header
+          ):
 
               raise SystemExit(
-                  'verusclhashv2_2 declaration still too late'
-              )
-
-
-          if shadow_decl > wrapper_pos:
-
-              raise SystemExit(
-                  'V13 shadow-core declaration still too late'
-              )
-
-
-          # Ensure implementation still exists too.
-          shadow_occurrences = cl.count(
-              '__verusclmulwithoutreduction64alignedrepeat_v13_shadow('
-          )
-
-
-          if shadow_occurrences < 3:
-
-              # prototype + wrapper call + definition
-              raise SystemExit(
-                  'Unexpected V13 shadow symbol occurrence count: '
-                  + str(shadow_occurrences)
+                  'verusclhashv2_2 prototype missing from header'
               )
 
 
@@ -614,104 +583,75 @@ jobs:
           ):
 
               raise SystemExit(
-                  'V13 build ID disappeared'
+                  'V13 BUILD ID missing'
               )
 
 
-          print(
-              'FIX 2 PASS: verusclhashv2_2 forward declared'
-          )
-
-
-          print(
-              'FIX 3 PASS: V13 shadow core forward declared'
-          )
-
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'V13 COMPILER PREFLIGHT: PASS'
-          )
-
-          print(
-              '======================================'
-          )
+          print('==============================')
+          print('V13 STRUCTURAL PREFLIGHT PASS')
+          print('==============================')
+          print('immutable copy      : PASS')
+          print('v2.2 declaration    : PASS')
+          print('shadow declaration  : PASS')
+          print('BUILD V13           : PASS')
 
           PY
 
 
       # ==============================================================
-      # SHOW IMPORTANT SOURCE LOCATIONS
+      # SOURCE VISIBILITY
       # ==============================================================
 
-      - name: Verify corrected V13 source
+      - name: Show corrected V13 source
         shell: bash
         run: |
           set -euo pipefail
 
           cd src
 
-
-          echo "===== BUILD ID ====="
-
+          echo "===== BUILD ====="
           grep -n \
             "A55-SHADOWKEY-V13" \
             api.cpp
 
+          echo "===== HEADER INCLUDE ====="
+          grep -n \
+            'verus_clhash.h' \
+            verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== DATA KEY BASE ====="
-
+          echo "===== BASE KEY ====="
           grep -n \
             "data_key_base" \
             verus/armv7/verusscan.cpp
 
-
-          echo "===== REAL KEY GENERATION ====="
-
+          echo "===== GEN KEY ====="
           grep -n \
             "GenNewCLKey" \
             verus/armv7/verusscan.cpp
 
-
-          echo "===== V13 RESTORE ====="
-
-          grep -n \
-            "verusclhashv13_restore" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== V13 SHADOW CORE ====="
-
+          echo "===== SHADOW CORE ====="
           grep -n \
             "__verusclmulwithoutreduction64alignedrepeat_v13_shadow" \
             verus/armv7/verus_clhash_portable.cpp
 
-
-          echo "===== V2.2 DECLARATIONS ====="
-
+          echo "===== V13 WRAPPER ====="
           grep -n \
-            "verusclhashv2_2" \
-            verus/armv7/verus_clhash_portable.cpp |
-            head -n 20
+            "verusclhashv13_shadow" \
+            verus/armv7/verus_clhash_portable.cpp
 
-
-          echo "===== COMPACT INDEXES ====="
-
+          echo "===== RESTORE ====="
           grep -n \
-            "v13_idx_a" \
-            verus/armv7/verusscan.cpp
+            "verusclhashv13_restore" \
+            verus/armv7/verus_clhash_portable.cpp
 
-
+          echo "===== UINT16 LOG ====="
           grep -n \
-            "v13_idx_b" \
+            "v13_idx_" \
             verus/armv7/verusscan.cpp
 
 
       # ==============================================================
-      # BUILD
+      # BUILD IMAGE
       # ==============================================================
 
       - name: Make build script executable
@@ -732,12 +672,15 @@ jobs:
 
           cd src
 
-
           docker build \
             -t ccminer-firestick-a55-v13 \
             -f build.Dockerfile \
             .
 
+
+      # ==============================================================
+      # ACTUAL ARM32 COMPILE
+      # ==============================================================
 
       - name: Build SHADOWKEY V13 armeabi-v7a
         shell: bash
@@ -746,10 +689,8 @@ jobs:
 
           cd src
 
-
           rm -rf \
             build-output
-
 
           mkdir -p \
             build-output
@@ -773,7 +714,7 @@ jobs:
 
           echo "===== BUILD LOG ====="
 
-          tail -n 550 \
+          tail -n 600 \
             build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
 
 
@@ -791,7 +732,6 @@ jobs:
           set -euo pipefail
 
           cd src
-
 
           BIN="build-output/ccminer-armeabi-v7a/bin/ccminer"
 
@@ -837,10 +777,8 @@ jobs:
 
           cd src
 
-
           rm -rf \
             dist
-
 
           mkdir -p \
             dist
@@ -860,7 +798,6 @@ jobs:
               cp \
                 "$BIN/libc++_shared.so" \
                 dist/
-
           fi
 
 
@@ -870,7 +807,6 @@ jobs:
               cp \
                 "$BIN/libomp.so" \
                 dist/
-
           fi
 
 
@@ -882,26 +818,24 @@ jobs:
           Build:
           A55-SHADOWKEY-V13
 
-          Stable base:
+          Base:
           exact A55-QCFAST-V12 #35
 
-          V12 measured:
-          approximately 1.26 MH/s
+          V12 builder:
+          5f9aa55a96369f8da93561e0c839ed81bc3e15c2
 
-          V13 source base:
+          V13 optimization source:
           run #36
-
-          V13 failed-run commit:
           3d9da4b5b0a837975e23c1ef38c37e28b04331f7
-
-          ccminer source:
-          7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI:
           armeabi-v7a / AArch32
 
           CPU:
           Cortex-A55
+
+          V12 measured baseline:
+          approximately 1.26 MH/s
 
           V10 FASTMOD:
           preserved
@@ -915,14 +849,14 @@ jobs:
           V13 immutable base key:
           enabled
 
-          V13 vector-value backup stores:
-          removed from validated fast path
+          V13 vector backup stores:
+          removed from validated hot path
 
-          V13 touched indexes:
+          V13 touched-index log:
           uint16
 
           V13 restore:
-          immutable base key
+          from immutable pristine key
 
           V13 validation:
           intermediate + 40 Haraka round keys
@@ -930,20 +864,17 @@ jobs:
           V13 fallback:
           exact V12
 
-          Run 36 compile fixes:
-          base-key memcpy moved into scanhash
-          verusclhashv2_2 forward declaration
-          V13 shadow-core forward declaration
+          V13 theoretical bookkeeping:
+          3584 bytes/hash -> 2304 bytes/hash
+
+          Compile repair:
+          immutable memcpy moved into scanhash
+          verus_clhash header imported
+          shadow core forward declared
 
           API:
           BUILD=A55-SHADOWKEY-V13
           EOF
-
-
-          echo "===== PACKAGE ====="
-
-          ls -lh \
-            dist/
 
 
           echo "===== SHA256 ====="
@@ -952,6 +883,12 @@ jobs:
             dist/* |
             tee \
               dist/SHA256SUMS.txt
+
+
+          echo "===== PACKAGE ====="
+
+          ls -lh \
+            dist/
 
 
       # ==============================================================
