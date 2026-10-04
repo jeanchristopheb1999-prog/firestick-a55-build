@@ -41,20 +41,23 @@ jobs:
 
 
           # ============================================================
-          # A55 / ARMv8 crypto / AArch32
+          # CPU TARGET
+          # Cortex-A55 / ARMv8 crypto / AArch32
           # ============================================================
 
           replace_once(
               'Makefile.am',
               'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp',
-              'SHARED_CPPFLAGS += -march=armv8-a+crypto -mtune=cortex-a55 '
-              '-mfpu=crypto-neon-fp-armv8 -mfloat-abi=softfp '
+              'SHARED_CPPFLAGS += -march=armv8-a+crypto '
+              '-mtune=cortex-a55 '
+              '-mfpu=crypto-neon-fp-armv8 '
+              '-mfloat-abi=softfp '
               '-fomit-frame-pointer'
           )
 
 
           # ============================================================
-          # V3 SIGBUS / ALIGNMENT FIXES
+          # V3 ALIGNMENT / SIGBUS FIXES
           # ============================================================
 
           replace_once(
@@ -115,28 +118,39 @@ jobs:
 
 
           # ============================================================
-          # HARDWARE AES FOR FULL / REFERENCE HARAKA
+          # HARDWARE AES
+          # Full/reference Haraka implementation
+          #
+          # IMPORTANT:
+          # We replace between two UNIQUE comments.
+          # No more accidental //extern match.
           # ============================================================
 
-          p = Path('verus/armv7/haraka_portable.c')
+          p = Path(
+              'verus/armv7/haraka_portable.c'
+          )
+
           s = p.read_text()
 
           start = s.index(
-              'void aesenc(unsigned char *s, const unsigned char *rk)'
+              '// Simulate _mm_aesenc_si128 instructions from AESNI'
           )
 
           end = s.index(
-              '\n// Simulate _mm_unpacklo_epi32',
+              '// Simulate _mm_unpacklo_epi32',
               start
           )
 
-          hw_aes = r'''void aesenc(
+          hw_aes = r'''// ARMv8 hardware AES
+          void aesenc(
               unsigned char *s,
               const unsigned char *rk
           )
           {
               uint8x16_t state =
-                  vld1q_u8((const uint8_t *)s);
+                  vld1q_u8(
+                      (const uint8_t *)s
+                  );
 
               const uint8x16_t zero =
                   vdupq_n_u8(0);
@@ -148,7 +162,9 @@ jobs:
                   );
 
               state =
-                  vaesmcq_u8(state);
+                  vaesmcq_u8(
+                      state
+                  );
 
               state =
                   veorq_u8(
@@ -163,6 +179,8 @@ jobs:
                   state
               );
           }
+
+
           '''
 
           p.write_text(
@@ -174,38 +192,33 @@ jobs:
 
           # ============================================================
           # HARAKA HEADER
-          # Safe returns + register-only CLHash AES
+          #
+          # Exact block replacement.
+          # This fixes the stupid //extern problem permanently.
           # ============================================================
 
-          p = Path('verus/armv7/haraka_portable.h')
-          s = p.read_text()
-
-          unsafe = 'return *(__m128i *)result;'
-
-          if s.count(unsafe) != 2:
-              raise SystemExit(
-                  f'Expected 2 unsafe Haraka returns, '
-                  f'found {s.count(unsafe)}'
-              )
-
-          s = s.replace(
-              unsafe,
-              'return vreinterpretq_m128i_u32(vld1q_u32(result));'
+          p = Path(
+              'verus/armv7/haraka_portable.h'
           )
 
+          s = p.read_text()
+
           start = s.index(
-              'void aesenc(unsigned char *s, const unsigned char *rk)'
-          ) + 1
+              '//extern void aesenc(unsigned char *s, '
+              'const unsigned char *rk);'
+          )
 
           end = s.index(
               '\ntypedef unsigned int uint32_t;',
               start
           )
 
-          fast_aes = r'''void aesenc(
+          fast_aes_header = r'''// ARMv8 AES implementation
+          void aesenc(
               unsigned char *s,
               const unsigned char *rk
           );
+
 
           static inline __attribute__((always_inline))
           __m128i v8_aesenc_vec(
@@ -214,7 +227,9 @@ jobs:
           )
           {
               uint8x16_t v =
-                  vreinterpretq_u8_s32(state);
+                  vreinterpretq_u8_s32(
+                      state
+                  );
 
               const uint8x16_t zero =
                   vdupq_n_u8(0);
@@ -226,7 +241,9 @@ jobs:
                   );
 
               v =
-                  vaesmcq_u8(v);
+                  vaesmcq_u8(
+                      v
+                  );
 
               v =
                   veorq_u8(
@@ -237,8 +254,11 @@ jobs:
                   );
 
               return
-                  vreinterpretq_s32_u8(v);
+                  vreinterpretq_s32_u8(
+                      v
+                  );
           }
+
 
           #define AES2_EMU(s0, s1, rci) do { \
               (s0) = v8_aesenc_vec((s0), rc[(rci)]); \
@@ -246,19 +266,40 @@ jobs:
               (s0) = v8_aesenc_vec((s0), rc[(rci) + 2]); \
               (s1) = v8_aesenc_vec((s1), rc[(rci) + 3]); \
           } while (0)
+
           '''
 
           s = (
               s[:start] +
-              fast_aes +
+              fast_aes_header +
               s[end:]
+          )
+
+
+          # Safe Haraka vector returns
+          unsafe = (
+              'return *(__m128i *)result;'
+          )
+
+          if s.count(unsafe) != 2:
+              raise SystemExit(
+                  'Expected exactly 2 unsafe '
+                  'Haraka returns, found '
+                  + str(s.count(unsafe))
+              )
+
+          s = s.replace(
+              unsafe,
+              'return '
+              'vreinterpretq_m128i_u32('
+              'vld1q_u32(result));'
           )
 
           p.write_text(s)
 
 
           # ============================================================
-          # CLHASH HOT PATH
+          # CLHASH
           # ============================================================
 
           p = Path(
@@ -268,13 +309,19 @@ jobs:
           s = p.read_text()
 
 
-          # Safe returns
-          unsafe = 'return *(__m128i *)result;'
+          # ------------------------------------------------------------
+          # Safe remaining portable returns
+          # ------------------------------------------------------------
+
+          unsafe = (
+              'return *(__m128i *)result;'
+          )
 
           if s.count(unsafe) != 3:
               raise SystemExit(
-                  f'Expected 3 unsafe CLHash returns, '
-                  f'found {s.count(unsafe)}'
+                  'Expected exactly 3 unsafe CLHash '
+                  'returns, found '
+                  + str(s.count(unsafe))
               )
 
           s = s.replace(
@@ -285,23 +332,31 @@ jobs:
           )
 
 
-          # Inline small helpers
+          # ------------------------------------------------------------
+          # Force small hot functions inline
+          # ------------------------------------------------------------
+
           s = s.replace(
               '__m128i _mm_setr_epi8_emu(',
-              'static inline __attribute__((always_inline)) '
+              'static inline '
+              '__attribute__((always_inline)) '
               '__m128i _mm_setr_epi8_emu(',
               1
           )
 
           s = s.replace(
               '__m128i _mm_xor_si128_emu(',
-              'static inline __attribute__((always_inline)) '
+              'static inline '
+              '__attribute__((always_inline)) '
               '__m128i _mm_xor_si128_emu(',
               1
           )
 
 
-          # Fast safe load
+          # ------------------------------------------------------------
+          # FAST SAFE VECTOR LOAD
+          # ------------------------------------------------------------
+
           start = s.index(
               '__m128i _mm_load_si128_emu(const void *p)'
           )
@@ -311,7 +366,8 @@ jobs:
               start
           )
 
-          fast_load = r'''static inline __attribute__((always_inline))
+          fast_load = r'''static inline
+          __attribute__((always_inline))
           __m128i _mm_load_si128_emu(
               const void *p
           )
@@ -332,7 +388,10 @@ jobs:
           )
 
 
-          # Fast safe store
+          # ------------------------------------------------------------
+          # FAST SAFE VECTOR STORE
+          # ------------------------------------------------------------
+
           start = s.index(
               'void _mm_store_si128_emu(void *p, __m128i val)'
           )
@@ -342,7 +401,8 @@ jobs:
               start
           )
 
-          fast_store = r'''static inline __attribute__((always_inline))
+          fast_store = r'''static inline
+          __attribute__((always_inline))
           void _mm_store_si128_emu(
               void *p,
               __m128i val
@@ -350,7 +410,9 @@ jobs:
           {
               vst1q_u8(
                   (uint8_t *)p,
-                  vreinterpretq_u8_s32(val)
+                  vreinterpretq_u8_s32(
+                      val
+                  )
               );
           }
           '''
@@ -363,7 +425,9 @@ jobs:
 
 
           # ============================================================
-          # NEON PSHUFB -> VTBL2
+          # V8 PSHUFB -> NATIVE AARCH32 VTBL
+          #
+          # Removes scalar 16-byte loop.
           # ============================================================
 
           start = s.index(
@@ -371,21 +435,27 @@ jobs:
           )
 
           end = s.index(
-              '\n// portable\n__m128i lazyLengthHash_port',
+              '\n// portable\n'
+              '__m128i lazyLengthHash_port',
               start
           )
 
-          neon_shuffle = r'''static inline __attribute__((always_inline))
+          neon_shuffle = r'''static inline
+          __attribute__((always_inline))
           __m128i _mm_shuffle_epi8_emu(
               __m128i a,
               __m128i b
           )
           {
               const uint8x16_t av =
-                  vreinterpretq_u8_s32(a);
+                  vreinterpretq_u8_s32(
+                      a
+                  );
 
               const uint8x16_t bv =
-                  vreinterpretq_u8_s32(b);
+                  vreinterpretq_u8_s32(
+                      b
+                  );
 
               uint8x8x2_t table;
 
@@ -395,36 +465,52 @@ jobs:
               table.val[1] =
                   vget_high_u8(av);
 
+
               uint8x16_t index =
                   vandq_u8(
                       bv,
-                      vdupq_n_u8(0x0f)
+                      vdupq_n_u8(
+                          0x0f
+                      )
                   );
+
 
               const uint8x16_t zero_mask =
                   vcgeq_u8(
                       bv,
-                      vdupq_n_u8(0x80)
+                      vdupq_n_u8(
+                          0x80
+                      )
                   );
+
 
               index =
                   vbslq_u8(
                       zero_mask,
-                      vdupq_n_u8(0xff),
+                      vdupq_n_u8(
+                          0xff
+                      ),
                       index
                   );
+
 
               const uint8x8_t lo =
                   vtbl2_u8(
                       table,
-                      vget_low_u8(index)
+                      vget_low_u8(
+                          index
+                      )
                   );
+
 
               const uint8x8_t hi =
                   vtbl2_u8(
                       table,
-                      vget_high_u8(index)
+                      vget_high_u8(
+                          index
+                      )
                   );
+
 
               return
                   vreinterpretq_s32_u8(
@@ -456,7 +542,8 @@ jobs:
               start
           )
 
-          pmull = r'''static inline __attribute__((always_inline))
+          pmull = r'''static inline
+          __attribute__((always_inline))
           __m128i _mm_clmulepi64_si128_emu(
               const __m128i &a,
               const __m128i &b,
@@ -464,28 +551,38 @@ jobs:
           )
           {
               const uint64x2_t av =
-                  vreinterpretq_u64_s32(a);
+                  vreinterpretq_u64_s32(
+                      a
+                  );
 
               const uint64x2_t bv =
-                  vreinterpretq_u64_s32(b);
+                  vreinterpretq_u64_s32(
+                      b
+                  );
+
 
               const uint64x1_t va =
                   (imm & 1)
                       ? vget_high_u64(av)
                       : vget_low_u64(av);
 
+
               const uint64x1_t vb =
                   (imm & 0x10)
                       ? vget_high_u64(bv)
                       : vget_low_u64(bv);
 
+
               uint64x2_t product;
+
 
               __asm__ volatile(
                   "vmull.p64 %q0, %P1, %P2"
                   : "=w"(product)
-                  : "w"(va), "w"(vb)
+                  : "w"(va),
+                    "w"(vb)
               );
+
 
               return
                   vreinterpretq_s32_u64(
@@ -503,6 +600,8 @@ jobs:
 
           # ============================================================
           # V7 VQRDMULH
+          #
+          # Preserves exact PMULHRSW overflow semantics.
           # ============================================================
 
           start = s.index(
@@ -514,17 +613,23 @@ jobs:
               start
           )
 
-          vqrdmulh = r'''static inline __attribute__((always_inline))
+          vqrdmulh = r'''static inline
+          __attribute__((always_inline))
           __m128i _mm_mulhrs_epi16_emu(
               __m128i a,
               __m128i b
           )
           {
               const int16x8_t va =
-                  vreinterpretq_s16_s32(a);
+                  vreinterpretq_s16_s32(
+                      a
+                  );
 
               const int16x8_t vb =
-                  vreinterpretq_s16_s32(b);
+                  vreinterpretq_s16_s32(
+                      b
+                  );
+
 
               int16x8_t result =
                   vqrdmulhq_s16(
@@ -532,10 +637,12 @@ jobs:
                       vb
                   );
 
+
               const int16x8_t min16 =
                   vdupq_n_s16(
                       (int16_t)-32768
                   );
+
 
               const uint16x8_t overflow =
                   vandq_u16(
@@ -549,12 +656,14 @@ jobs:
                       )
                   );
 
+
               result =
                   vbslq_s16(
                       overflow,
                       min16,
                       result
                   );
+
 
               return
                   vreinterpretq_s32_s16(
@@ -572,17 +681,16 @@ jobs:
 
 
           # ============================================================
-          # REGISTER-ONLY BRIDGES
+          # V8 REGISTER-ONLY BRIDGES
           #
-          # FIXED V8 ERROR:
-          # find the next function by its name, regardless of whitespace.
+          # Removes pointer casts / stack roundtrips from selector path.
           # ============================================================
 
           start = s.index(
               '__m128i _mm_set_epi64x_emu'
           )
 
-          marker_pos = s.index(
+          marker = s.index(
               '__m128i _mm_cvtsi32_si128_emu',
               start
           )
@@ -591,16 +699,18 @@ jobs:
               s.rfind(
                   '\n',
                   start,
-                  marker_pos
+                  marker
               ) + 1
           )
 
           if end <= start:
               raise SystemExit(
-                  'Could not locate register bridge boundary'
+                  'Register bridge boundary not found'
               )
 
-          register_bridges = r'''static inline __attribute__((always_inline))
+
+          register_bridges = r'''static inline
+          __attribute__((always_inline))
           __m128i _mm_set_epi64x_emu(
               uint64_t hi,
               uint64_t lo
@@ -608,32 +718,46 @@ jobs:
           {
               const uint64x2_t v =
                   vcombine_u64(
-                      vcreate_u64(lo),
-                      vcreate_u64(hi)
+                      vcreate_u64(
+                          lo
+                      ),
+                      vcreate_u64(
+                          hi
+                      )
                   );
 
               return
-                  vreinterpretq_s32_u64(v);
+                  vreinterpretq_s32_u64(
+                      v
+                  );
           }
 
 
-          static inline __attribute__((always_inline))
+          static inline
+          __attribute__((always_inline))
           __m128i _mm_cvtsi64_si128_emu(
               uint64_t lo
           )
           {
               const uint64x2_t v =
                   vcombine_u64(
-                      vcreate_u64(lo),
-                      vdup_n_u64(0)
+                      vcreate_u64(
+                          lo
+                      ),
+                      vdup_n_u64(
+                          0
+                      )
                   );
 
               return
-                  vreinterpretq_s32_u64(v);
+                  vreinterpretq_s32_u64(
+                      v
+                  );
           }
 
 
-          static inline __attribute__((always_inline))
+          static inline
+          __attribute__((always_inline))
           int64_t _mm_cvtsi128_si64_emu(
               __m128i &a
           )
@@ -641,14 +765,17 @@ jobs:
               return
                   vget_lane_s64(
                       vget_low_s64(
-                          vreinterpretq_s64_s32(a)
+                          vreinterpretq_s64_s32(
+                              a
+                          )
                       ),
                       0
                   );
           }
 
 
-          static inline __attribute__((always_inline))
+          static inline
+          __attribute__((always_inline))
           int32_t _mm_cvtsi128_si32_emu(
               __m128i &a
           )
@@ -672,7 +799,7 @@ jobs:
 
 
           # ============================================================
-          # VERUSSCAN HOT PATH
+          # VERUSSCAN V8
           # ============================================================
 
           p = Path(
@@ -682,16 +809,16 @@ jobs:
           s = p.read_text()
 
 
-          # Remove TLS throughput
+          # throughput is permanently 1
           s = s.replace(
               'static __thread uint32_t throughput = 0;',
-              '/* V8: throughput is always one. */',
+              '/* V8 throughput is constant one */',
               1
           )
 
 
           # ============================================================
-          # FIXKEY + PARTIAL HARAKA
+          # FIXKEY UNROLL + PARTIAL HARAKA
           # ============================================================
 
           start = s.index(
@@ -702,6 +829,7 @@ jobs:
               'extern "C" inline void VerusHashHalf',
               start
           )
+
 
           hot_helpers = r'''extern "C"
           __attribute__((always_inline))
@@ -714,18 +842,31 @@ jobs:
           )
           {
           #pragma clang loop unroll(full)
-              for (int i = 31; i >= 0; --i)
+              for (
+                  int i = 31;
+                  i >= 0;
+                  --i
+              )
               {
-                  keyback[fixrandex[i]] =
+                  keyback[
+                      fixrandex[i]
+                  ] =
                       g_prandex[i];
 
-                  keyback[fixrand[i]] =
+                  keyback[
+                      fixrand[i]
+                  ] =
                       g_prand[i];
               }
           }
 
 
-          static inline __attribute__((always_inline))
+          // ==========================================================
+          // REGISTER-ONLY HARAKA AES
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
           uint8x16_t v8_haraka_aes(
               uint8x16_t state,
               uint8x16_t key
@@ -741,7 +882,9 @@ jobs:
                   );
 
               state =
-                  vaesmcq_u8(state);
+                  vaesmcq_u8(
+                      state
+                  );
 
               return
                   veorq_u8(
@@ -751,23 +894,34 @@ jobs:
           }
 
 
-          static inline __attribute__((always_inline))
+          static inline
+          __attribute__((always_inline))
           uint8x16_t v8_unpacklo32(
               uint8x16_t a,
               uint8x16_t b
           )
           {
               const int32x4_t ai =
-                  vreinterpretq_s32_u8(a);
+                  vreinterpretq_s32_u8(
+                      a
+                  );
 
               const int32x4_t bi =
-                  vreinterpretq_s32_u8(b);
+                  vreinterpretq_s32_u8(
+                      b
+                  );
+
 
               const int32x2x2_t z =
                   vzip_s32(
-                      vget_low_s32(ai),
-                      vget_low_s32(bi)
+                      vget_low_s32(
+                          ai
+                      ),
+                      vget_low_s32(
+                          bi
+                      )
                   );
+
 
               return
                   vreinterpretq_u8_s32(
@@ -779,23 +933,34 @@ jobs:
           }
 
 
-          static inline __attribute__((always_inline))
+          static inline
+          __attribute__((always_inline))
           uint8x16_t v8_unpackhi32(
               uint8x16_t a,
               uint8x16_t b
           )
           {
               const int32x4_t ai =
-                  vreinterpretq_s32_u8(a);
+                  vreinterpretq_s32_u8(
+                      a
+                  );
 
               const int32x4_t bi =
-                  vreinterpretq_s32_u8(b);
+                  vreinterpretq_s32_u8(
+                      b
+                  );
+
 
               const int32x2x2_t z =
                   vzip_s32(
-                      vget_high_s32(ai),
-                      vget_high_s32(bi)
+                      vget_high_s32(
+                          ai
+                      ),
+                      vget_high_s32(
+                          bi
+                      )
                   );
+
 
               return
                   vreinterpretq_u8_s32(
@@ -807,7 +972,22 @@ jobs:
           }
 
 
-          static inline __attribute__((always_inline))
+          // ==========================================================
+          // PARTIAL KEYED HARAKA
+          //
+          // Full Haraka:
+          // 40 AES rounds.
+          //
+          // Mining hot path only needs vhash[7].
+          //
+          // This version:
+          // 34 AES rounds.
+          //
+          // Full hash is replayed only for share candidates.
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
           void v8_haraka512_word7(
               unsigned char *out,
               const unsigned char *in,
@@ -815,62 +995,93 @@ jobs:
           )
           {
               uint8x16_t s0 =
-                  vld1q_u8(in);
+                  vld1q_u8(
+                      in
+                  );
 
               uint8x16_t s1 =
-                  vld1q_u8(in + 16);
+                  vld1q_u8(
+                      in + 16
+                  );
 
               uint8x16_t s2 =
-                  vld1q_u8(in + 32);
+                  vld1q_u8(
+                      in + 32
+                  );
 
               uint8x16_t s3 =
-                  vld1q_u8(in + 48);
+                  vld1q_u8(
+                      in + 48
+                  );
 
 
+              // First three rounds completely.
           #pragma clang loop unroll(full)
-              for (int round = 0; round < 3; ++round)
+              for (
+                  int round = 0;
+                  round < 3;
+                  ++round
+              )
               {
                   const int r =
                       round * 8;
 
+
                   s0 = v8_haraka_aes(
                       s0,
-                      vreinterpretq_u8_s32(rc[r + 0])
+                      vreinterpretq_u8_s32(
+                          rc[r + 0]
+                      )
                   );
 
                   s1 = v8_haraka_aes(
                       s1,
-                      vreinterpretq_u8_s32(rc[r + 1])
+                      vreinterpretq_u8_s32(
+                          rc[r + 1]
+                      )
                   );
 
                   s2 = v8_haraka_aes(
                       s2,
-                      vreinterpretq_u8_s32(rc[r + 2])
+                      vreinterpretq_u8_s32(
+                          rc[r + 2]
+                      )
                   );
 
                   s3 = v8_haraka_aes(
                       s3,
-                      vreinterpretq_u8_s32(rc[r + 3])
+                      vreinterpretq_u8_s32(
+                          rc[r + 3]
+                      )
                   );
+
 
                   s0 = v8_haraka_aes(
                       s0,
-                      vreinterpretq_u8_s32(rc[r + 4])
+                      vreinterpretq_u8_s32(
+                          rc[r + 4]
+                      )
                   );
 
                   s1 = v8_haraka_aes(
                       s1,
-                      vreinterpretq_u8_s32(rc[r + 5])
+                      vreinterpretq_u8_s32(
+                          rc[r + 5]
+                      )
                   );
 
                   s2 = v8_haraka_aes(
                       s2,
-                      vreinterpretq_u8_s32(rc[r + 6])
+                      vreinterpretq_u8_s32(
+                          rc[r + 6]
+                      )
                   );
 
                   s3 = v8_haraka_aes(
                       s3,
-                      vreinterpretq_u8_s32(rc[r + 7])
+                      vreinterpretq_u8_s32(
+                          rc[r + 7]
+                      )
                   );
 
 
@@ -925,49 +1136,70 @@ jobs:
               }
 
 
-              // Round 4 complete AES layer.
+              // ======================================================
+              // Fourth round:
+              // complete AES stage.
+              // ======================================================
+
               s0 = v8_haraka_aes(
                   s0,
-                  vreinterpretq_u8_s32(rc[24])
+                  vreinterpretq_u8_s32(
+                      rc[24]
+                  )
               );
 
               s1 = v8_haraka_aes(
                   s1,
-                  vreinterpretq_u8_s32(rc[25])
+                  vreinterpretq_u8_s32(
+                      rc[25]
+                  )
               );
 
               s2 = v8_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(rc[26])
+                  vreinterpretq_u8_s32(
+                      rc[26]
+                  )
               );
 
               s3 = v8_haraka_aes(
                   s3,
-                  vreinterpretq_u8_s32(rc[27])
+                  vreinterpretq_u8_s32(
+                      rc[27]
+                  )
               );
+
 
               s0 = v8_haraka_aes(
                   s0,
-                  vreinterpretq_u8_s32(rc[28])
+                  vreinterpretq_u8_s32(
+                      rc[28]
+                  )
               );
 
               s1 = v8_haraka_aes(
                   s1,
-                  vreinterpretq_u8_s32(rc[29])
+                  vreinterpretq_u8_s32(
+                      rc[29]
+                  )
               );
 
               s2 = v8_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(rc[30])
+                  vreinterpretq_u8_s32(
+                      rc[30]
+                  )
               );
 
               s3 = v8_haraka_aes(
                   s3,
-                  vreinterpretq_u8_s32(rc[31])
+                  vreinterpretq_u8_s32(
+                      rc[31]
+                  )
               );
 
 
-              // Only compute dependency needed by output word 7.
+              // Only dependency needed for final output word 7.
               const uint8x16_t t =
                   v8_unpacklo32(
                       s0,
@@ -980,6 +1212,7 @@ jobs:
                       s3
                   );
 
+
               s2 =
                   v8_unpackhi32(
                       b,
@@ -987,25 +1220,41 @@ jobs:
                   );
 
 
-              // Final round: only state2 matters.
-              s2 = v8_haraka_aes(
-                  s2,
-                  vreinterpretq_u8_s32(rc[34])
-              );
+              // ======================================================
+              // Fifth round:
+              // only state2 is required.
+              // ======================================================
 
               s2 = v8_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(rc[38])
+                  vreinterpretq_u8_s32(
+                      rc[34]
+                  )
               );
 
 
+              s2 = v8_haraka_aes(
+                  s2,
+                  vreinterpretq_u8_s32(
+                      rc[38]
+                  )
+              );
+
+
+              // After final MIX,
+              // output bytes 52..55 come from
+              // lane 2 of pre-mix state2.
               uint32_t word7 =
                   vgetq_lane_u32(
-                      vreinterpretq_u32_u8(s2),
+                      vreinterpretq_u32_u8(
+                          s2
+                      ),
                       2
                   );
 
+
               uint32_t input_word7;
+
 
               memcpy(
                   &input_word7,
@@ -1013,8 +1262,11 @@ jobs:
                   sizeof(input_word7)
               );
 
+
+              // Haraka feed-forward.
               word7 ^=
                   input_word7;
+
 
               memcpy(
                   out + 28,
@@ -1034,7 +1286,16 @@ jobs:
 
 
           # ============================================================
-          # VERUS2 HASH FAST + FULL COLD REPLAY
+          # V8 VERUS HASH
+          #
+          # Fast path:
+          # partial Haraka word7.
+          #
+          # First hash on every thread:
+          # validate against complete original Haraka.
+          #
+          # Failure:
+          # automatic full-Haraka fallback.
           # ============================================================
 
           start = s.index(
@@ -1046,8 +1307,12 @@ jobs:
               start
           )
 
-          verus2 = r'''static __thread int
+
+          verus2_fast = r'''static __thread int
           v8_haraka_fast_state = 0;
+          //  0 = untested
+          //  1 = verified
+          // -1 = fallback
 
 
           extern "C"
@@ -1068,6 +1333,7 @@ jobs:
               (void)gpu_init;
               (void)version;
 
+
               memcpy(
                   curBuf + 47,
                   curBuf,
@@ -1079,6 +1345,7 @@ jobs:
                   curBuf,
                   1
               );
+
 
               memcpy(
                   curBuf + 32,
@@ -1121,8 +1388,10 @@ jobs:
               intermediate &=
                   511;
 
+
               const __m128i *round_keys =
-                  data_key + intermediate;
+                  data_key +
+                  intermediate;
 
 
               if (__builtin_expect(
@@ -1145,8 +1414,7 @@ jobs:
                   );
 
 
-                  // First hash of each thread validates
-                  // the V8 truncated implementation.
+                  // One-time thread verification.
                   if (__builtin_expect(
                           v8_haraka_fast_state == 0,
                           0
@@ -1156,6 +1424,7 @@ jobs:
                       uint32_t reference_hash[8] =
                           { 0 };
 
+
                       haraka512_port_keyed(
                           (unsigned char *)
                               reference_hash,
@@ -1163,7 +1432,9 @@ jobs:
                           round_keys
                       );
 
+
                       uint32_t fast_word7;
+
 
                       memcpy(
                           &fast_word7,
@@ -1205,6 +1476,11 @@ jobs:
           }
 
 
+          // ==========================================================
+          // COMPLETE HASH
+          // Only used for candidate verification.
+          // ==========================================================
+
           extern "C"
           __attribute__((noinline))
           void Verus2hashFullV8(
@@ -1223,6 +1499,7 @@ jobs:
               (void)gpu_init;
               (void)version;
 
+
               memcpy(
                   curBuf + 47,
                   curBuf,
@@ -1234,6 +1511,7 @@ jobs:
                   curBuf,
                   1
               );
+
 
               memcpy(
                   curBuf + 32,
@@ -1276,10 +1554,12 @@ jobs:
               intermediate &=
                   511;
 
+
               haraka512_port_keyed(
                   hash,
                   curBuf,
-                  data_key + intermediate
+                  data_key +
+                  intermediate
               );
 
 
@@ -1296,13 +1576,16 @@ jobs:
 
           s = (
               s[:start] +
-              verus2 +
+              verus2_fast +
               s[end:]
           )
 
 
           # ============================================================
-          # CANDIDATE COLD FULL-HASH RESOLUTION
+          # CANDIDATE PATH
+          #
+          # Fast word7 detects candidate.
+          # Complete 256-bit hash is replayed before submission.
           # ============================================================
 
           start = s.index(
@@ -1314,6 +1597,7 @@ jobs:
               start
           )
 
+
           candidate = r'''		if (__builtin_expect(
                       vhash[7] <= Htarg,
                       0
@@ -1323,20 +1607,32 @@ jobs:
                       uint32_t fullhash[8] =
                           { 0 };
 
+
                       Verus2hashFullV8(
-                          (unsigned char *)fullhash,
-                          (unsigned char *)blockhash_half,
+                          (unsigned char *)
+                              fullhash,
+
+                          (unsigned char *)
+                              blockhash_half,
+
                           nonceSpace,
+
                           data_key,
+
                           &gpuinit,
+
                           fixrand,
                           fixrandex,
+
                           data_key_prand,
                           data_key_prandex,
+
                           version
                       );
 
 
+                      // Never submit anything that disagrees
+                      // with complete Haraka.
                       if (
                           fullhash[7] ==
                           vhash[7]
@@ -1344,8 +1640,12 @@ jobs:
                       {
                           work->valid_nonces++;
 
-                          ((uint32_t*)full_data)[NONCE_OFT] =
+
+                          ((uint32_t *)
+                              full_data
+                          )[NONCE_OFT] =
                               nonce_buf;
+
 
                           memcpy(
                               work->data,
@@ -1353,8 +1653,11 @@ jobs:
                               140
                           );
 
-                          int nonce =
-                              work->valid_nonces - 1;
+
+                          const int nonce =
+                              work->valid_nonces -
+                              1;
+
 
                           memcpy(
                               work->extra,
@@ -1362,11 +1665,13 @@ jobs:
                               1347
                           );
 
+
                           memcpy(
                               work->extra + 1332,
                               nonceSpace,
                               15
                           );
+
 
                           bn_store_hash_target_ratio(
                               fullhash,
@@ -1375,9 +1680,12 @@ jobs:
                               nonce
                           );
 
+
                           work->nonces[
                               work->valid_nonces - 1
-                          ] = nonce_buf;
+                          ] =
+                              nonce_buf;
+
 
                           goto out;
                       }
@@ -1392,7 +1700,9 @@ jobs:
 
 
           # ============================================================
-          # LOOP BOOKKEEPING
+          # V8 LOOP BOOKKEEPING
+          #
+          # Remove work from every single nonce.
           # ============================================================
 
           s = s.replace(
@@ -1401,11 +1711,13 @@ jobs:
               1
           )
 
+
           s = s.replace(
               'gettimeofday(&tv_start, NULL);',
               '',
               1
           )
+
 
           s = s.replace(
               'throughput = 1;',
@@ -1413,19 +1725,24 @@ jobs:
               1
           )
 
+
           s = s.replace(
               '*hashes_done = nonce_buf - start_nonce + throughput;',
               '',
               1
           )
 
+
           s = s.replace(
-              'if ((uint64_t)throughput + (uint64_t)nonce_buf >= '
+              'if ((uint64_t)throughput + '
+              '(uint64_t)nonce_buf >= '
               '(uint64_t)max_nonce)',
-              'if ((uint64_t)nonce_buf + 1ULL >= '
+              'if ((uint64_t)nonce_buf + '
+              '1ULL >= '
               '(uint64_t)max_nonce)',
               1
           )
+
 
           s = s.replace(
               'nonce_buf += throughput;',
@@ -1433,17 +1750,25 @@ jobs:
               1
           )
 
-          old_out = '''out:
-          	gettimeofday(&tv_end, NULL);'''
 
-          new_out = '''out:
-          	*hashes_done =
-          	    nonce_buf - start_nonce + 1;'''
+          old_out = (
+              'out:\n'
+              '\tgettimeofday(&tv_end, NULL);'
+          )
+
+
+          new_out = (
+              'out:\n'
+              '\t*hashes_done = '
+              'nonce_buf - start_nonce + 1;'
+          )
+
 
           if old_out not in s:
               raise SystemExit(
-                  'Could not find V8 out label bookkeeping'
+                  'Could not locate original out bookkeeping'
               )
+
 
           s = s.replace(
               old_out,
@@ -1456,26 +1781,35 @@ jobs:
 
 
           # ============================================================
-          # API IDENTIFIER
+          # API BUILD IDENTIFIER
           # ============================================================
 
-          p = Path('api.cpp')
+          p = Path(
+              'api.cpp'
+          )
+
           s = p.read_text()
+
 
           old = (
               'sprintf(buffer, '
               '"NAME=%s;VER=%s;API=%s;"'
           )
 
+
           new = (
               'sprintf(buffer, '
-              '"NAME=%s;VER=%s;BUILD=A55-HOTPATH-V8;API=%s;"'
+              '"NAME=%s;VER=%s;'
+              'BUILD=A55-HOTPATH-V8;'
+              'API=%s;"'
           )
+
 
           if old not in s:
               raise SystemExit(
                   'API summary signature not found'
               )
+
 
           p.write_text(
               s.replace(
@@ -1486,115 +1820,253 @@ jobs:
           )
 
 
-          print('======================================')
-          print('FireStick A55 HOTPATH V8')
-          print('======================================')
-          print('V3 SIGBUS fixes       : YES')
-          print('ARMv8 AES             : YES')
-          print('Zero-copy PMULL       : YES')
-          print('VQRDMULH              : YES')
-          print('CLHash register AES   : YES')
-          print('Partial Haraka word7  : YES')
-          print('Full candidate replay : YES')
-          print('Runtime Haraka test   : YES')
-          print('NEON VTBL shuffle     : YES')
-          print('Register bridges      : YES')
-          print('FixKey unroll         : YES')
-          print('hashes_done hoist     : YES')
-          print('Frame pointer omitted : YES')
-          print('BUILD=A55-HOTPATH-V8')
+          print(
+              '======================================'
+          )
+
+          print(
+              'FireStick A55 HOTPATH V8'
+          )
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'V3 alignment/SIGBUS    : YES'
+          )
+
+          print(
+              'ARMv8 hardware AES     : YES'
+          )
+
+          print(
+              'V5 zero-copy PMULL     : YES'
+          )
+
+          print(
+              'V7 VQRDMULH            : YES'
+          )
+
+          print(
+              'CLHash register AES    : YES'
+          )
+
+          print(
+              'NEON VTBL shuffle      : YES'
+          )
+
+          print(
+              'Register bridges       : YES'
+          )
+
+          print(
+              'FixKey full unroll     : YES'
+          )
+
+          print(
+              'Partial Haraka word7   : YES'
+          )
+
+          print(
+              'Haraka 34/40 AES       : YES'
+          )
+
+          print(
+              'Runtime self-test      : YES'
+          )
+
+          print(
+              'Full candidate replay  : YES'
+          )
+
+          print(
+              'hashes_done hoist      : YES'
+          )
+
+          print(
+              'Frame pointer omitted  : YES'
+          )
+
+          print(
+              'BUILD=A55-HOTPATH-V8'
+          )
+
           PY
 
+
+      # ================================================================
+      # PATCH VALIDATION
+      # ================================================================
 
       - name: Verify V8 patches
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== CPU ====="
-          grep -n "cortex-a55" Makefile.am
-          grep -n "fomit-frame-pointer" Makefile.am
+          echo "===== CPU TARGET ====="
 
-          echo "===== AES ====="
-          grep -n "vaeseq_u8" \
-            verus/armv7/haraka_portable.c
+          grep -n \
+            "cortex-a55" \
+            Makefile.am
 
-          grep -n "v8_aesenc_vec" \
+          grep -n \
+            "fomit-frame-pointer" \
+            Makefile.am
+
+
+          echo "===== HARAKA HEADER ====="
+
+          grep -n \
+            "^void aesenc" \
             verus/armv7/haraka_portable.h
 
+          grep -n \
+            "v8_aesenc_vec" \
+            verus/armv7/haraka_portable.h
+
+          grep -n \
+            "AES2_EMU" \
+            verus/armv7/haraka_portable.h
+
+
+          echo "===== HARDWARE AES ====="
+
+          grep -n \
+            "vaeseq_u8" \
+            verus/armv7/haraka_portable.c
+
+
           echo "===== PMULL ====="
-          grep -n "vmull.p64" \
+
+          grep -n \
+            "vmull.p64" \
             verus/armv7/verus_clhash_portable.cpp
+
 
           echo "===== VQRDMULH ====="
-          grep -n "vqrdmulhq_s16" \
+
+          grep -n \
+            "vqrdmulhq_s16" \
             verus/armv7/verus_clhash_portable.cpp
+
 
           echo "===== VTBL ====="
-          grep -n "vtbl2_u8" \
+
+          grep -n \
+            "vtbl2_u8" \
             verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== REGISTER EXTRACTION ====="
-          grep -n "vget_lane_s64" \
+
+          echo "===== REGISTER BRIDGE ====="
+
+          grep -n \
+            "vget_lane_s64" \
             verus/armv7/verus_clhash_portable.cpp
+
 
           echo "===== FAST HARAKA ====="
-          grep -n "v8_haraka512_word7" \
+
+          grep -n \
+            "v8_haraka512_word7" \
             verus/armv7/verusscan.cpp
 
-          grep -n "rc\\[34\\]" \
+          grep -n \
+            "rc\\[34\\]" \
             verus/armv7/verusscan.cpp
 
-          grep -n "rc\\[38\\]" \
+          grep -n \
+            "rc\\[38\\]" \
             verus/armv7/verusscan.cpp
 
-          echo "===== FULL REPLAY ====="
-          grep -n "Verus2hashFullV8" \
-            verus/armv7/verusscan.cpp
 
           echo "===== SELF TEST ====="
-          grep -n "v8_haraka_fast_state" \
+
+          grep -n \
+            "v8_haraka_fast_state" \
             verus/armv7/verusscan.cpp
 
-          echo "===== API ====="
-          grep -n "A55-HOTPATH-V8" \
+
+          echo "===== FULL CANDIDATE REPLAY ====="
+
+          grep -n \
+            "Verus2hashFullV8" \
+            verus/armv7/verusscan.cpp
+
+
+          echo "===== ALIGNMENT ====="
+
+          grep -n \
+            "posix_memalign" \
+            verus/armv7/verusscan.cpp
+
+
+          echo "===== BUILD ID ====="
+
+          grep -n \
+            "A55-HOTPATH-V8" \
             api.cpp
 
+
+          echo "===== HEADER FIRST 90 LINES ====="
+
+          sed -n \
+            '1,90p' \
+            verus/armv7/haraka_portable.h
+
+
+      # ================================================================
+      # V7 MULHRS CORRECTNESS
+      # ================================================================
 
       - name: Verify MULHRS semantics
         shell: bash
         run: |
+          set -euo pipefail
+
           python3 - <<'PY'
           def wrap16(x):
               x &= 0xffff
+
               return (
                   x - 0x10000
                   if x & 0x8000
                   else x
               )
 
+
           def reference(a, b):
               return wrap16(
-                  ((a * b) + 0x4000) >> 15
+                  (
+                      (a * b) +
+                      0x4000
+                  ) >> 15
               )
+
 
           def arm_model(a, b):
               x = (
-                  ((a * b) + 0x4000)
-                  >> 15
+                  (
+                      (a * b) +
+                      0x4000
+                  ) >> 15
               )
+
 
               if x > 32767:
                   x = 32767
 
+
               if x < -32768:
                   x = -32768
+
 
               if (
                   a == -32768 and
                   b == -32768
               ):
                   x = -32768
+
 
               return x
 
@@ -1611,27 +2083,46 @@ jobs:
               (-22222, 11111),
           ]
 
+
           for a, b in tests:
-              r = reference(a, b)
-              n = arm_model(a, b)
+              r = reference(
+                  a,
+                  b
+              )
+
+              n = arm_model(
+                  a,
+                  b
+              )
+
 
               print(
                   a,
                   b,
+                  'reference=',
                   r,
+                  'v8=',
                   n
               )
 
+
               if r != n:
                   raise SystemExit(
-                      f'MULHRS mismatch: {a}, {b}'
+                      f'MULHRS mismatch: '
+                      f'{a}, {b}'
                   )
 
+
           print(
-              'MULHRS semantic tests PASSED'
+              'MULHRS semantics PASSED'
           )
+
           PY
 
+
+      # ================================================================
+      # BUILD
+      # ================================================================
 
       - name: Make Android build script executable
         run: |
@@ -1655,13 +2146,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf build-output
-          mkdir -p build-output
+          rm -rf \
+            build-output
 
-          docker run --rm \
+          mkdir -p \
+            build-output
+
+
+          docker run \
+            --rm \
             -v "$PWD/build-output:/build/output" \
             ccminer-firestick-a55-v8 \
             arm
+
 
           echo "===== OUTPUT ====="
 
@@ -1671,14 +2168,20 @@ jobs:
             -type f \
             -print
 
+
           echo "===== BUILD LOG ====="
 
-          tail -n 250 \
+          tail -n 300 \
             build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
+
 
           test -f \
             build-output/ccminer-armeabi-v7a/bin/ccminer
 
+
+      # ================================================================
+      # BINARY CHECKS
+      # ================================================================
 
       - name: Inspect V8 binary
         shell: bash
@@ -1687,47 +2190,85 @@ jobs:
 
           BIN="build-output/ccminer-armeabi-v7a/bin/ccminer"
 
+
           echo "===== FILE ====="
-          file "$BIN"
+
+          file \
+            "$BIN"
+
 
           echo "===== BUILD ID ====="
-          strings "$BIN" |
-            grep "A55-HOTPATH-V8"
 
-          echo "===== 64-BIT DIVISION ====="
-          readelf -Ws "$BIN" |
-            grep "__aeabi_ldivmod" || true
+          strings \
+            "$BIN" |
+            grep \
+              "A55-HOTPATH-V8"
 
-          echo "===== SIZE ====="
-          ls -lh "$BIN"
 
+          echo "===== DIVISION HELPER ====="
+
+          readelf \
+            -Ws \
+            "$BIN" |
+            grep \
+              "__aeabi_ldivmod" ||
+            true
+
+
+          echo "===== BINARY SIZE ====="
+
+          ls -lh \
+            "$BIN"
+
+
+      # ================================================================
+      # PACKAGE
+      # ================================================================
 
       - name: Prepare V8 package
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf dist
-          mkdir -p dist
+          rm -rf \
+            dist
+
+          mkdir -p \
+            dist
+
 
           BIN="build-output/ccminer-armeabi-v7a/bin"
+
 
           cp \
             "$BIN/ccminer" \
             dist/ccminer-a55-hotpath-v8
 
-          test -f "$BIN/libc++_shared.so" && \
-            cp "$BIN/libc++_shared.so" dist/ || true
 
-          test -f "$BIN/libomp.so" && \
-            cp "$BIN/libomp.so" dist/ || true
+          if test -f "$BIN/libc++_shared.so"; then
+            cp \
+              "$BIN/libc++_shared.so" \
+              dist/
+          fi
+
+
+          if test -f "$BIN/libomp.so"; then
+            cp \
+              "$BIN/libomp.so" \
+              dist/
+          fi
+
 
           chmod +x \
             dist/ccminer-a55-hotpath-v8
 
+
           cat > dist/BUILDINFO.txt <<EOF
           Build:
           A55-HOTPATH-V8
+
+          Source:
+          shmutalov/ccminer
 
           Source commit:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
@@ -1741,7 +2282,16 @@ jobs:
           ARMv8 crypto:
           enabled
 
+          Frame pointer:
+          omitted
+
+          V3 SIGBUS fixes:
+          preserved
+
           Hardware AES:
+          enabled
+
+          CLHash register AES:
           enabled
 
           Hardware PMULL:
@@ -1753,46 +2303,52 @@ jobs:
           VQRDMULH:
           enabled
 
-          MULHRS overflow correction:
+          MULHRS INT16_MIN correction:
           enabled
 
-          CLHash register AES:
+          NEON VTBL PSHUFB:
           enabled
 
-          Partial keyed Haraka:
+          Register selector extraction:
           enabled
-
-          Hot Haraka AES rounds:
-          34 instead of 40
-
-          Full candidate replay:
-          enabled
-
-          First-hash self-test:
-          enabled per thread
-
-          PSHUFB:
-          NEON VTBL2
 
           FixKey:
           fully unrolled
 
-          hashes_done:
-          moved out of per-hash loop
+          Partial keyed Haraka:
+          enabled
 
-          Frame pointer:
-          omitted
+          Haraka hot-path AES operations:
+          34 instead of 40
+
+          First-hash self-test:
+          enabled per thread
+
+          Automatic full-Haraka fallback:
+          enabled
+
+          Complete candidate replay:
+          enabled
+
+          hashes_done:
+          removed from per-nonce hot loop
 
           API:
           BUILD=A55-HOTPATH-V8
 
-          Stable champion baseline:
-          V7 approximately 430 kH/s
+          Stable comparison:
+          A55-VQRDMULH-V7
+
+          V7 measured:
+          approximately 430 kH/s sustained
           EOF
 
+
           echo "===== FILE ====="
+
           file \
             dist/ccminer-a55-hotpath-v8
+
 
           echo "===== SHA256 ====="
 
@@ -1801,6 +2357,10 @@ jobs:
             tee \
               dist/SHA256SUMS.txt
 
+
+      # ================================================================
+      # ARTIFACT
+      # ================================================================
 
       - name: Upload V8 artifact
         uses: actions/upload-artifact@v4
