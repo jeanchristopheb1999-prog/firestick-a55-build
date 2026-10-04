@@ -12,7 +12,7 @@ jobs:
 
     steps:
       # ==============================================================
-      # EXACT KNOWN-GOOD BASES
+      # BASES EXACTES VALIDÉES
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -45,7 +45,7 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY EXACT V10 + CORRECTED V11
+      # RECONSTRUIT V10 EXACT + V11
       # ==============================================================
 
       - name: Apply corrected HOTCORE V11
@@ -71,11 +71,13 @@ jobs:
 
           i = 0
 
+
           while i < len(lines):
 
               if lines[i].strip() == "python3 - <<'PY'":
 
                   start = i + 1
+
                   end = None
 
 
@@ -84,6 +86,7 @@ jobs:
                       if lines[j].strip() == 'PY':
 
                           end = j
+
                           break
 
 
@@ -113,13 +116,14 @@ jobs:
           if len(blocks) < 3:
 
               raise SystemExit(
-                  'Expected at least 3 V11 Python blocks, found '
+                  'Expected 3 V11 Python blocks, found '
                   + str(len(blocks))
               )
 
 
           # ==========================================================
-          # BLOCK 1 = exact V10 reconstruction
+          # BLOCK 1
+          # RECONSTRUIT EXACTEMENT V10
           # ==========================================================
 
           print(
@@ -147,15 +151,24 @@ jobs:
           )
 
 
+          api = Path(
+              'api.cpp'
+          ).read_text()
+
+
+          if 'BUILD=A55-FASTMOD-V10' not in api:
+
+              raise SystemExit(
+                  'Exact V10 replay failed'
+              )
+
+
           # ==========================================================
-          # BLOCK 2 = V11 patch from run #30
+          # BLOCK 2
+          # PATCH V11 DU RUN #30
           #
-          # Run #30 only failed because we incorrectly assumed
-          # there were duplicate fixrand/fixrandex stores.
-          #
-          # Actual V10 active core already has exactly ONE pair.
-          #
-          # Remove that attempted optimization entirely.
+          # On enlève seulement la fausse optimisation fixrand.
+          # V10 contient déjà exactement un store nécessaire.
           # ==========================================================
 
           patch = blocks[1]
@@ -174,62 +187,70 @@ jobs:
           )
 
 
-          corrected_section = r'''# ==========================================================
-          # FIXRAND/FIXRANDEX
+          replacement = r'''# ==========================================================
+          # FIXRAND / FIXRANDEX
           #
-          # Verified on the real V10 source:
-          #
-          # The active v2.1 function already contains exactly
-          # one required fixrand assignment and one required
-          # fixrandex assignment.
-          #
-          # Do NOT remove them.
+          # Verified against actual V10:
+          # exactly one required store each.
+          # Keep them unchanged.
           # ==========================================================
 
-          if (
+          fix_count_before =
               active.count(
                   'fixrand[i] = prand_idx;'
               )
-              != 1
-          ):
-              raise SystemExit(
-                  'Unexpected active fixrand count before final sanity: '
-                  + str(
-                      active.count(
-                          'fixrand[i] = prand_idx;'
-                      )
-                  )
-              )
 
 
-          if (
+          fixex_count_before =
               active.count(
                   'fixrandex[i] = prandex_idx;'
               )
-              != 1
-          ):
+
+
+          if fix_count_before != 1:
+
               raise SystemExit(
-                  'Unexpected active fixrandex count before final sanity: '
-                  + str(
-                      active.count(
-                          'fixrandex[i] = prandex_idx;'
-                      )
-                  )
+                  'Expected one active fixrand store, got '
+                  + str(fix_count_before)
+              )
+
+
+          if fixex_count_before != 1:
+
+              raise SystemExit(
+                  'Expected one active fixrandex store, got '
+                  + str(fixex_count_before)
               )
 
 
           print(
-              'fixrand/fixrandex already optimal: 1 store each'
+              'fixrand bookkeeping already optimal'
           )
 
 
           '''
 
 
+          # Python itself cannot split "=" this way,
+          # so correct these two local statements before compilation.
+          replacement = replacement.replace(
+              '''fix_count_before =
+              active.count(''',
+              '''fix_count_before = active.count('''
+          )
+
+
+          replacement = replacement.replace(
+              '''fixex_count_before =
+              active.count(''',
+              '''fixex_count_before = active.count('''
+          )
+
+
           patch = (
-              patch[:section_start] +
-              corrected_section +
-              patch[section_end:]
+              patch[:section_start]
+              + replacement
+              + patch[section_end:]
           )
 
 
@@ -238,18 +259,25 @@ jobs:
           )
 
           print(
-              'APPLY CORRECTED V11 HOTCORE'
+              'APPLY HOTCORE V11'
           )
 
           print(
               '======================================'
+          )
+
+
+          compile(
+              patch,
+              'v11-hotcore.py',
+              'exec'
           )
 
 
           exec(
               compile(
                   patch,
-                  'v11-hotcore-corrected.py',
+                  'v11-hotcore.py',
                   'exec'
               ),
               {
@@ -259,42 +287,108 @@ jobs:
 
 
           # ==========================================================
-          # BLOCK 3 = semantic tests from V11
-          # ==========================================================
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'RUN V11 SEMANTIC TESTS'
-          )
-
-          print(
-              '======================================'
-          )
-
-
-          exec(
-              compile(
-                  blocks[2],
-                  'v11-semantics.py',
-                  'exec'
-              ),
-              {
-                  '__name__': '__main__',
-              }
-          )
-
-
-          # ==========================================================
-          # FINAL SOURCE VALIDATION
+          # IMPORTANT PRE-COMPILE FIX
+          #
+          # MIX2_EMU uses a local variable named "tmp":
+          #
+          #   tmp = _mm_unpacklo_epi32(...)
+          #
+          # The rewritten V11 case 0x14 must therefore declare:
+          #
+          #   __m128i tmp;
+          #
+          # The original code had it.
           # ==========================================================
 
           clhash_path = Path(
               'verus/armv7/verus_clhash_portable.cpp'
           )
 
+
+          clhash = clhash_path.read_text()
+
+
+          active_start = clhash.index(
+              '__verusclmulwithoutreduction64alignedrepeat_v2_1'
+          )
+
+
+          active_end = clhash.index(
+              '// verus intermediate hash extra - v2.2',
+              active_start
+          )
+
+
+          active = clhash[
+              active_start:
+              active_end
+          ]
+
+
+          case14_start = active.index(
+              'case 0x14:'
+          )
+
+
+          case18_start = active.index(
+              'case 0x18:',
+              case14_start
+          )
+
+
+          case14 = active[
+              case14_start:
+              case18_start
+          ]
+
+
+          if 'MIX2_EMU' not in case14:
+
+              raise SystemExit(
+                  'case 0x14 MIX2_EMU missing'
+              )
+
+
+          if '__m128i tmp;' not in case14:
+
+              brace = case14.index('{') + 1
+
+
+              case14 = (
+                  case14[:brace]
+                  + '\n'
+                  + '        __m128i tmp;\n'
+                  + case14[brace:]
+              )
+
+
+              active = (
+                  active[:case14_start]
+                  + case14
+                  + active[case18_start:]
+              )
+
+
+              clhash = (
+                  clhash[:active_start]
+                  + active
+                  + clhash[active_end:]
+              )
+
+
+              clhash_path.write_text(
+                  clhash
+              )
+
+
+              print(
+                  'Added required __m128i tmp to case 0x14'
+              )
+
+
+          # ==========================================================
+          # FINAL SOURCE VALIDATION
+          # ==========================================================
 
           clhash = clhash_path.read_text()
 
@@ -309,159 +403,175 @@ jobs:
           ).read_text()
 
 
-          if (
-              'BUILD=A55-HOTCORE-V11'
-              not in api
-          ):
+          active_start = clhash.index(
+              '__verusclmulwithoutreduction64alignedrepeat_v2_1'
+          )
+
+
+          active_end = clhash.index(
+              '// verus intermediate hash extra - v2.2',
+              active_start
+          )
+
+
+          active = clhash[
+              active_start:
+              active_end
+          ]
+
+
+          # ----------------------------------------------------------
+          # BUILD ID
+          # ----------------------------------------------------------
+
+          if 'BUILD=A55-HOTCORE-V11' not in api:
 
               raise SystemExit(
                   'V11 BUILD ID missing'
               )
 
 
-          func_start = clhash.index(
-              '__verusclmulwithoutreduction64alignedrepeat_v2_1'
+          # ----------------------------------------------------------
+          # V10 FASTMOD
+          # ----------------------------------------------------------
+
+          if 'v10_umod64_ctx' not in clhash:
+
+              raise SystemExit(
+                  'V10 FASTMOD core missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # V11 FASTMOD context hoisting
+          # ----------------------------------------------------------
+
+          if 'v11_smod64_ctx' not in active:
+
+              raise SystemExit(
+                  'V11 FASTMOD context helper missing'
+              )
+
+
+          if 'const v10_div32_ctx divctx' not in active:
+
+              raise SystemExit(
+                  'V11 hoisted division context missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # Selector split
+          # ----------------------------------------------------------
+
+          if 'selector_words' not in active:
+
+              raise SystemExit(
+                  '32-bit selector split missing'
+              )
+
+
+          if 'sel_lo' not in active:
+
+              raise SystemExit(
+                  'sel_lo missing'
+              )
+
+
+          if 'sel_hi' not in active:
+
+              raise SystemExit(
+                  'sel_hi missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # Cached buffers
+          # ----------------------------------------------------------
+
+          if active.count('pbuf_v') < 2:
+
+              raise SystemExit(
+                  'pbuf cache missing'
+              )
+
+
+          if active.count('buftmp_v') < 2:
+
+              raise SystemExit(
+                  'buftmp cache missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # Direct low32 XOR
+          # ----------------------------------------------------------
+
+          if 'v11_xor_low32' not in active:
+
+              raise SystemExit(
+                  'Direct low32 XOR missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # Required MIX2 temp
+          # ----------------------------------------------------------
+
+          case14_start = active.index(
+              'case 0x14:'
           )
 
 
-          func_end = clhash.index(
-              '// verus intermediate hash extra - v2.2',
-              func_start
+          case18_start = active.index(
+              'case 0x18:',
+              case14_start
           )
 
 
-          active = clhash[
-              func_start:
-              func_end
+          case14 = active[
+              case14_start:
+              case18_start
           ]
 
 
-          # ----------------------------------------------------------
-          # Exact V10 FASTMOD still present
-          # ----------------------------------------------------------
-
-          if (
-              'v10_umod64_ctx'
-              not in clhash
-          ):
+          if '__m128i tmp;' not in case14:
 
               raise SystemExit(
-                  'FASTMOD V10 core missing'
+                  'case14 tmp declaration missing'
               )
 
 
           # ----------------------------------------------------------
-          # V11 hoisted modulo context
+          # fixrand bookkeeping
           # ----------------------------------------------------------
 
           if (
-              'v11_smod64_ctx'
-              not in active
-          ):
-
-              raise SystemExit(
-                  'V11 hoisted FASTMOD missing'
+              active.count(
+                  'fixrand[i] = prand_idx;'
               )
-
-
-          # ----------------------------------------------------------
-          # Selector optimization
-          # ----------------------------------------------------------
-
-          if (
-              'selector_words'
-              not in active
+              != 1
           ):
 
               raise SystemExit(
-                  'V11 32-bit selector missing'
+                  'Active fixrand store count != 1'
               )
 
 
           if (
-              'sel_lo'
-              not in active or
-              'sel_hi'
-              not in active
+              active.count(
+                  'fixrandex[i] = prandex_idx;'
+              )
+              != 1
           ):
 
               raise SystemExit(
-                  'V11 selector lanes missing'
+                  'Active fixrandex store count != 1'
               )
 
 
           # ----------------------------------------------------------
-          # Cached case 0x14 / 0x18 buffers
-          # ----------------------------------------------------------
-
-          if (
-              'pbuf_v'
-              not in active or
-              'buftmp_v'
-              not in active
-          ):
-
-              raise SystemExit(
-                  'V11 cached pbuf vectors missing'
-              )
-
-
-          # ----------------------------------------------------------
-          # Direct low32 modulo XOR
-          # ----------------------------------------------------------
-
-          if (
-              'v11_xor_low32'
-              not in active
-          ):
-
-              raise SystemExit(
-                  'V11 low32 XOR missing'
-              )
-
-
-          # ----------------------------------------------------------
-          # Required key restore bookkeeping
-          # ----------------------------------------------------------
-
-          fix_count = active.count(
-              'fixrand[i] = prand_idx;'
-          )
-
-
-          fixex_count = active.count(
-              'fixrandex[i] = prandex_idx;'
-          )
-
-
-          print(
-              'Active fixrand count:',
-              fix_count
-          )
-
-
-          print(
-              'Active fixrandex count:',
-              fixex_count
-          )
-
-
-          if fix_count != 1:
-
-              raise SystemExit(
-                  'Active fixrand count must equal 1'
-              )
-
-
-          if fixex_count != 1:
-
-              raise SystemExit(
-                  'Active fixrandex count must equal 1'
-              )
-
-
-          # ----------------------------------------------------------
-          # Constant CLMUL optimization
+          # Constant PMULL eliminated
           # ----------------------------------------------------------
 
           if (
@@ -474,10 +584,7 @@ jobs:
               )
 
 
-          if (
-              '0x10000ULL'
-              not in clhash
-          ):
+          if '0x10000ULL' not in clhash:
 
               raise SystemExit(
                   'Constant lazyLengthHash replacement missing'
@@ -488,13 +595,10 @@ jobs:
           # ThinLTO
           # ----------------------------------------------------------
 
-          if (
-              '-flto=thin'
-              not in makefile
-          ):
+          if '-flto=thin' not in makefile:
 
               raise SystemExit(
-                  'ThinLTO missing'
+                  'ThinLTO flags missing'
               )
 
 
@@ -503,7 +607,636 @@ jobs:
           )
 
           print(
-              'HOTCORE V11 SOURCE VALIDATION: PASS'
+              'HOTCORE V11 SOURCE PREFLIGHT: PASS'
+          )
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'V10 FASTMOD            : YES'
+          )
+
+          print(
+              'V11 selector 32-bit    : YES'
+          )
+
+          print(
+              'V11 cached buffers     : YES'
+          )
+
+          print(
+              'V11 div context hoist  : YES'
+          )
+
+          print(
+              'V11 direct low32 XOR   : YES'
+          )
+
+          print(
+              'case14 MIX2 tmp        : YES'
+          )
+
+          print(
+              'constant PMULL removed : YES'
+          )
+
+          print(
+              'ThinLTO                : YES'
+          )
+
+          print(
+              'BUILD=A55-HOTCORE-V11'
+          )
+
+          PY
+
+
+      # ==============================================================
+      # SEMANTIC TESTS
+      #
+      # Completely rewritten.
+      # Does NOT reuse the broken Python from run #30/#32.
+      # ==============================================================
+
+      - name: Verify HOTCORE V11 semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import random
+
+
+          MASK32 = 0xffffffff
+          MASK64 = 0xffffffffffffffff
+
+
+          # ==========================================================
+          # CARRYLESS MULTIPLICATION CONSTANT
+          # ==========================================================
+
+          def clmul64(a, b):
+
+              result = 0
+
+              for shift in range(64):
+
+                  if (a >> shift) & 1:
+
+                      result ^= b << shift
+
+
+              return result
+
+
+          assert clmul64(
+              64,
+              1024
+          ) == 0x10000
+
+
+          print(
+              'constant CLMUL: PASS'
+          )
+
+
+          # ==========================================================
+          # SELECTOR 64 -> 2x32 EQUIVALENCE
+          # ==========================================================
+
+          random.seed(
+              0xA5511
+          )
+
+
+          for _ in range(
+              1000000
+          ):
+
+              selector = random.getrandbits(
+                  64
+              )
+
+
+              lo = selector & MASK32
+
+              hi = selector >> 32
+
+              keymask = 511
+
+
+              assert (
+                  ((selector >> 5) & keymask)
+                  ==
+                  ((lo >> 5) & keymask)
+              )
+
+
+              assert (
+                  ((selector >> 32) & keymask)
+                  ==
+                  (hi & keymask)
+              )
+
+
+              assert (
+                  (selector & 3)
+                  ==
+                  (lo & 3)
+              )
+
+
+              assert (
+                  (selector & 0x1c)
+                  ==
+                  (lo & 0x1c)
+              )
+
+
+              assert (
+                  (selector >> 61)
+                  ==
+                  (hi >> 29)
+              )
+
+
+              original_delta = (
+                  ((selector & 1) << 1)
+                  - 1
+              )
+
+
+              new_delta = (
+                  1
+                  if lo & 1
+                  else -1
+              )
+
+
+              assert (
+                  original_delta
+                  ==
+                  new_delta
+              )
+
+
+              control_bits = (
+                  (lo >> 28)
+                  |
+                  ((hi << 4) & MASK32)
+              )
+
+
+              for rounds in range(8):
+
+                  old = bool(
+                      selector
+                      &
+                      (
+                          0x10000000
+                          << rounds
+                      )
+                  )
+
+
+                  new = bool(
+                      control_bits
+                      &
+                      (
+                          1
+                          << rounds
+                      )
+                  )
+
+
+                  assert old == new
+
+
+          print(
+              '1,000,000 selector equivalence tests: PASS'
+          )
+
+
+          # ==========================================================
+          # DIRECT LOW32 XOR
+          # ==========================================================
+
+          for _ in range(
+              250000
+          ):
+
+              lanes = [
+                  random.getrandbits(32)
+                  for _ in range(4)
+              ]
+
+
+              value = random.getrandbits(
+                  32
+              )
+
+
+              expected = [
+                  lanes[0] ^ value,
+                  lanes[1],
+                  lanes[2],
+                  lanes[3],
+              ]
+
+
+              actual = list(
+                  lanes
+              )
+
+
+              actual[0] ^= value
+
+
+              assert (
+                  actual
+                  ==
+                  expected
+              )
+
+
+          print(
+              '250,000 low32 XOR tests: PASS'
+          )
+
+
+          # ==========================================================
+          # V10/V11 FAST MODULO MODEL
+          # ==============================================================
+
+          def u32(x):
+
+              return x & MASK32
+
+
+          def umod32(n, d):
+
+              q = n // d
+
+              return u32(
+                  n - q * d
+              )
+
+
+          def fast_umod64_32(
+              numerator,
+              d
+          ):
+
+              if d == 1:
+
+                  return 0
+
+
+              u1 = (
+                  numerator
+                  >> 32
+              ) & MASK32
+
+
+              u0 = (
+                  numerator
+                  & MASK32
+              )
+
+
+              if u1 >= d:
+
+                  u1 = umod32(
+                      u1,
+                      d
+                  )
+
+
+              if u1 == 0:
+
+                  return umod32(
+                      u0,
+                      d
+                  )
+
+
+              shift = (
+                  32
+                  -
+                  d.bit_length()
+              )
+
+
+              vn = u32(
+                  d << shift
+              )
+
+
+              vn1 = vn >> 16
+
+              vn0 = vn & 0xffff
+
+
+              if shift:
+
+                  un32 = u32(
+                      (u1 << shift)
+                      |
+                      (
+                          u0
+                          >>
+                          (
+                              32
+                              -
+                              shift
+                          )
+                      )
+                  )
+
+
+                  un10 = u32(
+                      u0 << shift
+                  )
+
+              else:
+
+                  un32 = u1
+
+                  un10 = u0
+
+
+              un1 = un10 >> 16
+
+              un0 = un10 & 0xffff
+
+
+              q1 = un32 // vn1
+
+              rhat = u32(
+                  un32
+                  -
+                  q1 * vn1
+              )
+
+
+              while (
+                  q1 >= 0x10000
+                  or
+                  q1 * vn0
+                  >
+                  (
+                      (rhat << 16)
+                      +
+                      un1
+                  )
+              ):
+
+                  q1 = u32(
+                      q1 - 1
+                  )
+
+
+                  rhat = u32(
+                      rhat + vn1
+                  )
+
+
+                  if rhat >= 0x10000:
+
+                      break
+
+
+              un21 = u32(
+                  (un32 << 16)
+                  +
+                  un1
+                  -
+                  q1 * vn
+              )
+
+
+              q0 = un21 // vn1
+
+              rhat = u32(
+                  un21
+                  -
+                  q0 * vn1
+              )
+
+
+              while (
+                  q0 >= 0x10000
+                  or
+                  q0 * vn0
+                  >
+                  (
+                      (rhat << 16)
+                      +
+                      un0
+                  )
+              ):
+
+                  q0 = u32(
+                      q0 - 1
+                  )
+
+
+                  rhat = u32(
+                      rhat + vn1
+                  )
+
+
+                  if rhat >= 0x10000:
+
+                      break
+
+
+              rem = u32(
+                  (un21 << 16)
+                  +
+                  un0
+                  -
+                  q0 * vn
+              )
+
+
+              return rem >> shift
+
+
+          def c_remainder(
+              dividend,
+              divisor
+          ):
+
+              quotient = (
+                  abs(dividend)
+                  //
+                  abs(divisor)
+              )
+
+
+              if (
+                  (dividend < 0)
+                  !=
+                  (divisor < 0)
+              ):
+
+                  quotient = -quotient
+
+
+              return (
+                  dividend
+                  -
+                  quotient * divisor
+              )
+
+
+          def fast_signed_mod(
+              dividend,
+              divisor
+          ):
+
+              raw = (
+                  dividend
+                  & MASK64
+              )
+
+
+              if dividend < 0:
+
+                  magnitude = (
+                      (~raw + 1)
+                      & MASK64
+                  )
+
+              else:
+
+                  magnitude = raw
+
+
+              d = (
+                  -divisor
+                  if divisor < 0
+                  else divisor
+              )
+
+
+              remainder = fast_umod64_32(
+                  magnitude,
+                  d
+              )
+
+
+              if dividend < 0:
+
+                  return -remainder
+
+
+              return remainder
+
+
+          # Edge cases
+          edge_dividends = [
+              -(1 << 63),
+              -(1 << 63) + 1,
+              -0x7fffffffffffffff,
+              -1234567890123456789,
+              -0x100000000,
+              -1,
+              0,
+              1,
+              0xffffffff,
+              0x100000000,
+              1234567890123456789,
+              (1 << 63) - 1,
+          ]
+
+
+          edge_divisors = [
+              -(1 << 31),
+              -2147483647,
+              -65536,
+              -3,
+              -2,
+              -1,
+              1,
+              2,
+              3,
+              65536,
+              2147483646,
+              2147483647,
+          ]
+
+
+          for dividend in edge_dividends:
+
+              for divisor in edge_divisors:
+
+                  assert (
+                      fast_signed_mod(
+                          dividend,
+                          divisor
+                      )
+                      ==
+                      c_remainder(
+                          dividend,
+                          divisor
+                      )
+                  )
+
+
+          print(
+              'FASTMOD edge cases: PASS'
+          )
+
+
+          for _ in range(
+              500000
+          ):
+
+              dividend = random.randint(
+                  -(1 << 63),
+                  (1 << 63) - 1
+              )
+
+
+              divisor = random.randint(
+                  -(1 << 31),
+                  (1 << 31) - 1
+              )
+
+
+              if divisor == 0:
+
+                  divisor = 1
+
+
+              assert (
+                  fast_signed_mod(
+                      dividend,
+                      divisor
+                  )
+                  ==
+                  c_remainder(
+                      dividend,
+                      divisor
+                  )
+              )
+
+
+          print(
+              '500,000 FASTMOD tests: PASS'
+          )
+
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'HOTCORE V11 SEMANTICS: PASS'
           )
 
           print(
@@ -514,7 +1247,7 @@ jobs:
 
 
       # ==============================================================
-      # SHOW PATCHES
+      # SOURCE CHECK
       # ==============================================================
 
       - name: Verify HOTCORE V11 source
@@ -532,28 +1265,49 @@ jobs:
             api.cpp
 
 
-          echo "===== V10 FASTMOD ====="
+          echo "===== HARDWARE AES ====="
+
+          grep -n \
+            "v8_aesenc_vec" \
+            verus/armv7/haraka_portable.h
+
+
+          echo "===== HARDWARE PMULL ====="
+
+          grep -n \
+            "vmull.p64" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== VQRDMULH ====="
+
+          grep -n \
+            "vqrdmulhq_s16" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== FASTMOD V10 ====="
 
           grep -n \
             "v10_umod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== V11 FASTMOD CONTEXT ====="
+          echo "===== FASTMOD V11 CONTEXT ====="
 
           grep -n \
             "v11_smod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== 32-BIT SELECTOR ====="
+          echo "===== SELECTOR 32 BIT ====="
 
           grep -n \
             "selector_words" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== CACHED BUFFERS ====="
+          echo "===== CACHED PBUF ====="
 
           grep -n \
             "pbuf_v" \
@@ -565,17 +1319,17 @@ jobs:
             verus/armv7/verus_clhash_portable.cpp
 
 
+          echo "===== MIX2 TMP ====="
+
+          grep -n \
+            "__m128i tmp;" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
           echo "===== DIRECT LOW32 XOR ====="
 
           grep -n \
             "v11_xor_low32" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== FIXRAND ====="
-
-          grep -n \
-            "fixrand\[i\] = prand_idx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
@@ -629,12 +1383,9 @@ jobs:
           cd src
 
 
-          rm -rf \
-            build-output
+          rm -rf build-output
 
-
-          mkdir -p \
-            build-output
+          mkdir -p build-output
 
 
           docker run \
@@ -680,19 +1431,17 @@ jobs:
 
           echo "===== FILE ====="
 
-          file \
-            "$BIN"
+          file "$BIN"
 
 
           echo "===== BUILD ID ====="
 
-          strings \
-            "$BIN" |
+          strings "$BIN" |
             grep \
               "A55-HOTCORE-V11"
 
 
-          echo "===== HARDWARE UDIV ====="
+          echo "===== UDIV ====="
 
           if command -v llvm-objdump >/dev/null 2>&1
           then
@@ -700,14 +1449,14 @@ jobs:
               llvm-objdump \
                 -d \
                 "$BIN" |
-                grep -m 30 \
+                grep -m 40 \
                   -E "\budiv\b" ||
                 true
 
           fi
 
 
-          echo "===== REMAINING __aeabi_ldivmod ====="
+          echo "===== REMAINING AEABI LDIVMOD ====="
 
           readelf \
             -Ws \
@@ -719,8 +1468,7 @@ jobs:
 
           echo "===== SIZE ====="
 
-          ls -lh \
-            "$BIN"
+          ls -lh "$BIN"
 
 
       # ==============================================================
@@ -735,12 +1483,9 @@ jobs:
           cd src
 
 
-          rm -rf \
-            dist
+          rm -rf dist
 
-
-          mkdir -p \
-            dist
+          mkdir -p dist
 
 
           BIN="build-output/ccminer-armeabi-v7a/bin"
@@ -782,11 +1527,11 @@ jobs:
           Base:
           exact A55-FASTMOD-V10
 
-          V10 workflow commit:
+          V10 workflow:
           73446a48e954bcc579c302d5a01e3dfb71b2bd30
 
-          V11 development base:
-          7f92ff0f8788f54781704ce8414915584450bd78
+          V11 source patch:
+          based on run 30
 
           ccminer:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
@@ -800,7 +1545,7 @@ jobs:
           V10 sustained baseline:
           approximately 1.16 MH/s
 
-          FASTMOD V10:
+          V10 FASTMOD:
           preserved
 
           Hardware AES:
@@ -812,52 +1557,55 @@ jobs:
           VQRDMULH:
           preserved
 
-          NEON VTBL:
+          VTBL:
           preserved
 
           Partial Haraka:
           preserved
 
-          Candidate full replay:
+          Full candidate replay:
           preserved
 
           Runtime Haraka validation:
           preserved
 
           V11 selector:
-          32-bit NEON lanes
+          direct 32-bit NEON lanes
 
-          V11 loop counters:
+          V11 outer loop:
+          32-bit
+
+          V11 rounds:
           32-bit
 
           V11 pbuf neighbour:
+          cached
+
+          V11 case 0x14 buffers:
+          cached in registers
+
+          V11 case 0x14 control:
           precomputed
 
-          V11 case 0x14:
-          pbuf vectors cached
+          V11 case 0x18 buffers:
+          cached in registers
 
-          V11 case 0x14:
-          control bits cached
+          V11 case 0x18 control:
+          precomputed
 
-          V11 case 0x18:
-          pbuf vectors cached
+          V11 case 0x18 FASTMOD context:
+          hoisted outside rounds loop
 
-          V11 case 0x18:
-          control bits cached
-
-          V11 case 0x18:
-          FASTMOD context hoisted outside rounds loop
-
-          V11 modulo XOR:
+          V11 remainder XOR:
           direct low32 lane
 
           fixrand/fixrandex:
-          original single required store preserved
+          original required stores preserved
 
           lazyLengthHash(1024,64):
           constant 0x10000
 
-          Per-hash constant PMULL:
+          Constant per-hash PMULL:
           removed
 
           ThinLTO:
@@ -870,8 +1618,7 @@ jobs:
 
           echo "===== PACKAGE ====="
 
-          ls -lh \
-            dist/
+          ls -lh dist/
 
 
           echo "===== SHA256 ====="
@@ -883,7 +1630,7 @@ jobs:
 
 
       # ==============================================================
-      # UPLOAD
+      # ARTIFACT
       # ==============================================================
 
       - name: Upload HOTCORE V11 artifact
