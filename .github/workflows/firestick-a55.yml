@@ -1,4 +1,4 @@
-name: FireStick A55 OPT AlignFix V2
+name: FireStick A55 OPT AlignFix V3
 
 on:
   workflow_dispatch:
@@ -30,18 +30,18 @@ jobs:
                   raise SystemExit(f'Expected code not found in {path}: {old}')
               p.write_text(s.replace(old, new, 1))
 
-          # ------------------------------------------------------------
-          # 1. Cortex-A55 + ARMv8 crypto while staying 32-bit AArch32
-          # ------------------------------------------------------------
+          # ============================================================
+          # 1. Cortex-A55 + ARMv8 Crypto in 32-bit AArch32
+          # ============================================================
           replace_once(
               'Makefile.am',
               'SHARED_CPPFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=softfp',
               'SHARED_CPPFLAGS += -march=armv8-a+crypto -mtune=cortex-a55 -mfpu=crypto-neon-fp-armv8 -mfloat-abi=softfp'
           )
 
-          # ------------------------------------------------------------
-          # 2. Main Verus buffer alignment
-          # ------------------------------------------------------------
+          # ============================================================
+          # 2. Critical Verus alignment fixes
+          # ============================================================
           replace_once(
               'verus/armv7/verusscan.cpp',
               'uint8_t _ALIGN(4)  blockhash_half[64] = { 0 };',
@@ -58,7 +58,6 @@ jobs:
               }'''
           )
 
-          # More stack alignment safety
           replace_once(
               'verus/armv7/verusscan.cpp',
               'uint8_t  full_data[140 + 3 + 1344] = { 0 };',
@@ -77,16 +76,16 @@ jobs:
               'alignas(16) uint32_t vhash[8] = { 0 };'
           )
 
-          # Remove an unsafe unaligned uint32_t store at nonceSpace+11
+          # Remove unsafe unaligned uint32 store at nonceSpace+11
           replace_once(
               'verus/armv7/verusscan.cpp',
               '((uint32_t *)(&nonceSpace[11]))[0] = nonce_buf;',
               'memcpy(&nonceSpace[11], &nonce_buf, sizeof(nonce_buf));'
           )
 
-          # ------------------------------------------------------------
+          # ============================================================
           # 3. Hardware AES for Haraka
-          # ------------------------------------------------------------
+          # ============================================================
           p = Path('verus/armv7/haraka_portable.c')
           s = p.read_text()
 
@@ -111,9 +110,11 @@ jobs:
 
           p.write_text(s[:start] + hw_aes + s[end:])
 
-          # ------------------------------------------------------------
-          # 4. Haraka temporary-vector alignment fixes
-          # ------------------------------------------------------------
+          # ============================================================
+          # 4. Haraka temporary vectors
+          # Avoid casting uint32_t[4] directly to __m128i.
+          # vld1q_u32 is safe for normal uint32 alignment.
+          # ============================================================
           p = Path('verus/armv7/haraka_portable.h')
           s = p.read_text()
 
@@ -121,26 +122,20 @@ jobs:
 
           if s.count(unsafe) != 2:
               raise SystemExit(
-                  f'Expected 2 unsafe Haraka vector returns, found {s.count(unsafe)}'
+                  f'Expected 2 unsafe Haraka returns, found {s.count(unsafe)}'
               )
 
           s = s.replace(
               unsafe,
-              '''__m128i out;
-              memcpy(&out, result, sizeof(out));
-              return out;'''
+              'return vreinterpretq_m128i_u32(vld1q_u32(result));'
           )
 
           p.write_text(s)
 
-          # ------------------------------------------------------------
-          # 5. CLHash SIGBUS fixes
-          #
-          # IMPORTANT:
-          # We retain the proven software clmul64 in this V2 because
-          # Android NDK AArch32 does not expose vmull_p64 the way A64 does.
-          # PMULL will be added later with dedicated ARM32 assembly.
-          # ------------------------------------------------------------
+          # ============================================================
+          # 5. CLHash: remove unsafe vector casts
+          # Keep proven software clmul64 for this version.
+          # ============================================================
           p = Path('verus/armv7/verus_clhash_portable.cpp')
           s = p.read_text()
 
@@ -148,7 +143,7 @@ jobs:
 
           if s.count(unsafe) != 3:
               raise SystemExit(
-                  f'Expected 3 unsafe CLHash vector returns, found {s.count(unsafe)}'
+                  f'Expected 3 unsafe CLHash returns, found {s.count(unsafe)}'
               )
 
           s = s.replace(
@@ -158,9 +153,9 @@ jobs:
               return out;'''
           )
 
-          # ------------------------------------------------------------
-          # 6. Force unaligned-safe NEON loads
-          # ------------------------------------------------------------
+          # ============================================================
+          # 6. Unaligned-safe NEON load
+          # ============================================================
           start = s.index('__m128i _mm_load_si128_emu(const void *p)')
           end = s.index('\n void _mm_store_si128_emu', start)
 
@@ -174,9 +169,9 @@ jobs:
 
           s = s[:start] + safe_load + s[end:]
 
-          # ------------------------------------------------------------
-          # 7. Force unaligned-safe NEON stores
-          # ------------------------------------------------------------
+          # ============================================================
+          # 7. Unaligned-safe NEON store
+          # ============================================================
           start = s.index('void _mm_store_si128_emu(void *p, __m128i val)')
           end = s.index('\n__m128i _mm_shuffle_epi8_emu', start)
 
@@ -193,33 +188,31 @@ jobs:
 
           p.write_text(s)
 
-          print('=================================')
-          print('FireStick A55 OPT AlignFix V2')
-          print('=================================')
-          print('Cortex-A55 tune       : ENABLED')
+          print('===================================')
+          print('FireStick A55 OPT AlignFix V3')
+          print('===================================')
+          print('Cortex-A55 tuning     : ENABLED')
           print('ARMv8 crypto          : ENABLED')
           print('Hardware AES          : ENABLED')
           print('NEON                   : ENABLED')
-          print('CLMUL                  : SOFTWARE SAFE VERSION')
+          print('CLMUL                  : SOFTWARE SAFE')
           print('data_key alignment     : 64 bytes')
           print('blockhash alignment    : 32 bytes')
-          print('stack buffer alignment : ENABLED')
-          print('safe NEON load/store   : ENABLED')
-          print('unsafe vector casts    : REMOVED')
+          print('stack alignment        : ENABLED')
+          print('safe NEON accesses     : ENABLED')
+          print('dangerous casts        : REMOVED')
           PY
 
-      - name: Verify patches
+      - name: Verify optimized patches
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "===== FLAGS ====="
+          echo "===== CPU FLAGS ====="
           grep -n "SHARED_CPPFLAGS" Makefile.am
-
-          echo "===== A55 ====="
           grep -n "cortex-a55" Makefile.am
 
-          echo "===== AES ====="
+          echo "===== HARDWARE AES ====="
           grep -n "vaeseq_u8" verus/armv7/haraka_portable.c
           grep -n "vaesmcq_u8" verus/armv7/haraka_portable.c
 
@@ -227,13 +220,13 @@ jobs:
           grep -n "alignas" verus/armv7/verusscan.cpp
           grep -n "posix_memalign" verus/armv7/verusscan.cpp
 
-          echo "===== SAFE LOADS ====="
+          echo "===== SAFE CLHASH LOAD ====="
           grep -n "vld1q_u8" verus/armv7/verus_clhash_portable.cpp
 
           echo "===== SOFTWARE CLMUL ====="
           grep -n "clmul64" verus/armv7/verus_clhash_portable.cpp | head
 
-      - name: Make Android script executable
+      - name: Make Android build script executable
         run: chmod +x scripts/build-android-ccminer.sh
 
       - name: Build Android image
@@ -242,7 +235,7 @@ jobs:
           set -euo pipefail
 
           docker build \
-            -t ccminer-firestick-a55-alignfix-v2 \
+            -t ccminer-firestick-a55-alignfix-v3 \
             -f build.Dockerfile \
             .
 
@@ -256,20 +249,20 @@ jobs:
 
           docker run --rm \
             -v "$PWD/build-output:/build/output" \
-            ccminer-firestick-a55-alignfix-v2 \
+            ccminer-firestick-a55-alignfix-v3 \
             arm
 
-          echo "===== OUTPUT FILES ====="
+          echo "===== BUILD OUTPUT ====="
           find build-output -maxdepth 4 -type f -print
 
-          echo "===== BUILD LOG END ====="
-          tail -n 150 \
+          echo "===== BUILD LOG ====="
+          tail -n 200 \
             build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
 
           test -f \
             build-output/ccminer-armeabi-v7a/bin/ccminer
 
-      - name: Prepare unique package
+      - name: Prepare V3 package
         shell: bash
         run: |
           set -euo pipefail
@@ -280,7 +273,7 @@ jobs:
           BIN="build-output/ccminer-armeabi-v7a/bin"
 
           cp "$BIN/ccminer" \
-            dist/ccminer-a55-alignfix-v2
+            dist/ccminer-a55-alignfix-v3
 
           if [ -f "$BIN/libc++_shared.so" ]; then
             cp "$BIN/libc++_shared.so" dist/
@@ -290,32 +283,32 @@ jobs:
             cp "$BIN/libomp.so" dist/
           fi
 
-          chmod +x dist/ccminer-a55-alignfix-v2
+          chmod +x dist/ccminer-a55-alignfix-v3
 
           cat > dist/BUILDINFO.txt <<EOF
-          Build: FireStick A55 OPT AlignFix V2
+          Build: FireStick A55 OPT AlignFix V3
           Source: 7f30d6bfb64d0f3ba010191c5a185016ba46f454
-          ABI: armeabi-v7a
+          ABI: armeabi-v7a / AArch32
           Android API: 23
-          CPU: Cortex-A55
-          ISA: ARMv8-A crypto / AArch32
-          AES: hardware
-          CLMUL: software safe implementation
-          Main buffer alignment: 32 bytes
-          data_key alignment: 64 bytes
-          safe unaligned NEON load/store: yes
+          CPU tune: Cortex-A55
+          ARMv8 Crypto: enabled
+          Hardware AES: enabled
+          CLMUL: software-safe
+          blockhash_half: 32-byte aligned
+          data_key: 64-byte aligned
+          safe NEON load/store: enabled
           EOF
 
           echo "===== BINARY ====="
-          file dist/ccminer-a55-alignfix-v2
+          file dist/ccminer-a55-alignfix-v3
 
-          echo "===== HASHES ====="
+          echo "===== SHA256 ====="
           sha256sum dist/* | tee dist/SHA256SUMS.txt
 
-      - name: Upload Fire Stick artifact
+      - name: Upload V3 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firestick-a55-alignfix-v2-${{ github.run_number }}
+          name: firestick-a55-alignfix-v3-${{ github.run_number }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
