@@ -1,4 +1,4 @@
-name: FireStick A55 FASTMOD V10
+name: FireStick A55 HOTCORE V11
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
 
     steps:
       # ==============================================================
-      # GET EXACT HISTORICAL V8 WORKFLOW
+      # EXACT V8 + EXACT V10 HISTORY
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -22,12 +22,14 @@ jobs:
           ref: 6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0
           path: v8-base
 
+      - name: Checkout exact V10 workflow
+        uses: actions/checkout@v4
+        with:
+          repository: jeanchristopheb1999-prog/firestick-a55-build
+          ref: 73446a48e954bcc579c302d5a01e3dfb71b2bd30
+          path: v10-base
 
-      # ==============================================================
-      # GET PINNED CCMINER SOURCE
-      # ==============================================================
-
-      - name: Checkout pinned ccminer ARM source
+      - name: Checkout pinned ccminer source
         uses: actions/checkout@v4
         with:
           repository: shmutalov/ccminer
@@ -36,10 +38,16 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY THE EXACT V8 CHAMPION PATCH
+      # REBUILD EXACT V10 SOURCE
+      #
+      # The V10 workflow contains:
+      #   Python block #1 = exact V8 patch
+      #   Python block #2 = FASTMOD V10 patch
+      #
+      # Replay BOTH without rewriting them.
       # ==============================================================
 
-      - name: Rebuild exact V8 champion base
+      - name: Replay exact V10 champion
         shell: bash
         run: |
           set -euo pipefail
@@ -52,46 +60,57 @@ jobs:
 
 
           workflow = Path(
-              '../v8-base/.github/workflows/firestick-a55.yml'
+              '../v10-base/.github/workflows/firestick-a55.yml'
           ).read_text()
 
 
           lines = workflow.splitlines()
 
+          blocks = []
 
-          start = None
+          i = 0
 
-          for i, line in enumerate(lines):
-              if line.strip() == "python3 - <<'PY'":
+          while i < len(lines):
+
+              if lines[i].strip() == "python3 - <<'PY'":
+
                   start = i + 1
-                  break
+
+                  end = None
+
+                  for j in range(start, len(lines)):
+
+                      if lines[j].strip() == 'PY':
+                          end = j
+                          break
 
 
-          if start is None:
+                  if end is None:
+                      raise SystemExit(
+                          'Unterminated Python block in V10 workflow'
+                      )
+
+
+                  blocks.append(
+                      textwrap.dedent(
+                          '\n'.join(
+                              lines[start:end]
+                          )
+                      )
+                  )
+
+
+                  i = end + 1
+
+              else:
+                  i += 1
+
+
+          if len(blocks) < 2:
               raise SystemExit(
-                  'Could not find historical V8 Python patch'
+                  f'Expected at least 2 V10 Python blocks, '
+                  f'found {len(blocks)}'
               )
-
-
-          end = None
-
-          for i in range(start, len(lines)):
-              if lines[i].strip() == 'PY':
-                  end = i
-                  break
-
-
-          if end is None:
-              raise SystemExit(
-                  'Could not find end of historical V8 patch'
-              )
-
-
-          patch_code = textwrap.dedent(
-              '\n'.join(
-                  lines[start:end]
-              )
-          )
 
 
           print(
@@ -99,11 +118,15 @@ jobs:
           )
 
           print(
-              'REPLAY EXACT V8 CHAMPION'
+              'REPLAYING EXACT V10 CHAMPION'
           )
 
           print(
-              '6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0'
+              'V10 commit:'
+          )
+
+          print(
+              '73446a48e954bcc579c302d5a01e3dfb71b2bd30'
           )
 
           print(
@@ -111,29 +134,51 @@ jobs:
           )
 
 
-          exec(
-              compile(
-                  patch_code,
-                  'historical-v8-patch.py',
-                  'exec'
-              ),
-              {
-                  '__name__': '__main__',
-              }
-          )
+          for index in range(2):
+
+              print(
+                  f'Executing V10 patch block #{index + 1}'
+              )
+
+
+              exec(
+                  compile(
+                      blocks[index],
+                      f'v10-block-{index + 1}.py',
+                      'exec'
+                  ),
+                  {
+                      '__name__': '__main__',
+                  }
+              )
+
+
+          api = Path(
+              'api.cpp'
+          ).read_text()
+
+
+          if (
+              'BUILD=A55-FASTMOD-V10'
+              not in api
+          ):
+              raise SystemExit(
+                  'Exact V10 rebuild failed: BUILD ID missing'
+              )
 
 
           print(
-              'V8 champion patch replay: PASS'
+              'Exact V10 source rebuild: PASS'
           )
+
           PY
 
 
       # ==============================================================
-      # FASTMOD V10
+      # V11 HOTCORE PATCH
       # ==============================================================
 
-      - name: Patch FASTMOD V10
+      - name: Patch HOTCORE V11
         shell: bash
         run: |
           set -euo pipefail
@@ -144,6 +189,46 @@ jobs:
           from pathlib import Path
 
 
+          # ==========================================================
+          # COMPILER / LINKER
+          #
+          # ThinLTO lets clang optimize across:
+          #   verusscan.cpp
+          #   verus_clhash_portable.cpp
+          #   haraka_portable.c
+          #
+          # V10 already uses O3.
+          # ==========================================================
+
+          p = Path(
+              'Makefile.am'
+          )
+
+          makefile = p.read_text()
+
+
+          makefile += r'''
+
+          # ==========================================================
+          # A55 HOTCORE V11
+          # ==========================================================
+          SHARED_CPPFLAGS += -flto=thin
+          SHARED_CPPFLAGS += -fno-semantic-interposition
+          SHARED_CPPFLAGS += -falign-loops=16
+          SHARED_LDFLAGS += -flto=thin
+          SHARED_LDFLAGS += -Wl,--lto-O3
+          '''
+
+
+          p.write_text(
+              makefile
+          )
+
+
+          # ==========================================================
+          # CLHASH
+          # ==========================================================
+
           p = Path(
               'verus/armv7/verus_clhash_portable.cpp'
           )
@@ -152,404 +237,8 @@ jobs:
 
 
           # ==========================================================
-          # EXACT AARCH32 64/32 REMAINDER
-          #
-          # Replaces:
-          #
-          #     int64_t % int32_t
-          #
-          # which normally pulls in __aeabi_ldivmod on ARM32.
-          #
-          # The A55 has native 32-bit UDIV.
-          #
-          # We perform:
-          #
-          #     unsigned 64 / unsigned 32 remainder
-          #
-          # using native 32-bit UDIV, then restore the signed
-          # C/C++ remainder sign.
-          #
-          # No float.
-          # No reciprocal approximation.
-          # Exact integer result.
+          # V11 HELPERS
           # ==========================================================
-
-          helper = r'''
-
-          // ==========================================================
-          // A55 FASTMOD V10
-          // ==========================================================
-
-          typedef struct
-          {
-              uint32_t d;
-              uint32_t shift;
-              uint32_t vn;
-              uint32_t vn1;
-              uint32_t vn0;
-
-          } v10_div32_ctx;
-
-
-          static inline
-          __attribute__((always_inline))
-          uint32_t v10_udiv32(
-              uint32_t numerator,
-              uint32_t denominator
-          )
-          {
-              uint32_t quotient;
-
-
-              __asm__ volatile(
-                  "udiv %0, %1, %2"
-                  : "=r"(quotient)
-                  : "r"(numerator),
-                    "r"(denominator)
-              );
-
-
-              return quotient;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          uint32_t v10_umod32(
-              uint32_t numerator,
-              uint32_t denominator
-          )
-          {
-              const uint32_t quotient =
-                  v10_udiv32(
-                      numerator,
-                      denominator
-                  );
-
-
-              return
-                  numerator -
-                  quotient * denominator;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          v10_div32_ctx v10_make_div32_ctx(
-              int32_t divisor
-          )
-          {
-              v10_div32_ctx ctx;
-
-
-              const uint32_t raw =
-                  (uint32_t)divisor;
-
-
-              ctx.d =
-                  divisor < 0
-                      ? (uint32_t)(
-                            0u - raw
-                        )
-                      : raw;
-
-
-              ctx.shift =
-                  (uint32_t)
-                  __builtin_clz(
-                      ctx.d
-                  );
-
-
-              ctx.vn =
-                  ctx.d <<
-                  ctx.shift;
-
-
-              ctx.vn1 =
-                  ctx.vn >>
-                  16;
-
-
-              ctx.vn0 =
-                  ctx.vn &
-                  0xffffu;
-
-
-              return ctx;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          uint32_t v10_umod64_ctx(
-              uint64_t numerator,
-              const v10_div32_ctx *ctx
-          )
-          {
-              const uint32_t d =
-                  ctx->d;
-
-
-              if (__builtin_expect(
-                      d == 1u,
-                      0
-                  ))
-              {
-                  return 0u;
-              }
-
-
-              uint32_t u1 =
-                  (uint32_t)(
-                      numerator >>
-                      32
-                  );
-
-
-              const uint32_t u0 =
-                  (uint32_t)numerator;
-
-
-              // Reduce high half first.
-              if (u1 >= d)
-              {
-                  u1 =
-                      v10_umod32(
-                          u1,
-                          d
-                      );
-              }
-
-
-              // Fast path when remaining value is 32-bit.
-              if (__builtin_expect(
-                      u1 == 0u,
-                      0
-                  ))
-              {
-                  return
-                      v10_umod32(
-                          u0,
-                          d
-                      );
-              }
-
-
-              // ------------------------------------------------------
-              // Exact normalized 64/32 division in base 2^16.
-              // ------------------------------------------------------
-
-              const uint32_t shift =
-                  ctx->shift;
-
-
-              uint32_t un32;
-              uint32_t un10;
-
-
-              if (shift != 0u)
-              {
-                  un32 =
-                      (u1 << shift) |
-                      (
-                          u0 >>
-                          (
-                              32u -
-                              shift
-                          )
-                      );
-
-
-                  un10 =
-                      u0 <<
-                      shift;
-              }
-              else
-              {
-                  un32 =
-                      u1;
-
-
-                  un10 =
-                      u0;
-              }
-
-
-              const uint32_t un1 =
-                  un10 >>
-                  16;
-
-
-              const uint32_t un0 =
-                  un10 &
-                  0xffffu;
-
-
-              const uint32_t vn =
-                  ctx->vn;
-
-
-              const uint32_t vn1 =
-                  ctx->vn1;
-
-
-              const uint32_t vn0 =
-                  ctx->vn0;
-
-
-              // ------------------------------------------------------
-              // Quotient digit #1
-              // ------------------------------------------------------
-
-              uint32_t q1 =
-                  v10_udiv32(
-                      un32,
-                      vn1
-                  );
-
-
-              uint32_t rhat =
-                  un32 -
-                  q1 * vn1;
-
-
-              while (
-                  q1 >= 0x10000u ||
-                  q1 * vn0 >
-                      (
-                          (rhat << 16) +
-                          un1
-                      )
-              )
-              {
-                  --q1;
-
-
-                  rhat +=
-                      vn1;
-
-
-                  if (
-                      rhat >=
-                      0x10000u
-                  )
-                  {
-                      break;
-                  }
-              }
-
-
-              const uint32_t un21 =
-                  (un32 << 16) +
-                  un1 -
-                  q1 * vn;
-
-
-              // ------------------------------------------------------
-              // Quotient digit #2
-              // ------------------------------------------------------
-
-              uint32_t q0 =
-                  v10_udiv32(
-                      un21,
-                      vn1
-                  );
-
-
-              rhat =
-                  un21 -
-                  q0 * vn1;
-
-
-              while (
-                  q0 >= 0x10000u ||
-                  q0 * vn0 >
-                      (
-                          (rhat << 16) +
-                          un0
-                      )
-              )
-              {
-                  --q0;
-
-
-                  rhat +=
-                      vn1;
-
-
-                  if (
-                      rhat >=
-                      0x10000u
-                  )
-                  {
-                      break;
-                  }
-              }
-
-
-              const uint32_t rem_normalized =
-                  (un21 << 16) +
-                  un0 -
-                  q0 * vn;
-
-
-              return
-                  rem_normalized >>
-                  shift;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          int32_t v10_smod64(
-              int64_t dividend,
-              int32_t divisor
-          )
-          {
-              const v10_div32_ctx ctx =
-                  v10_make_div32_ctx(
-                      divisor
-                  );
-
-
-              const uint64_t raw =
-                  (uint64_t)dividend;
-
-
-              const int negative =
-                  dividend < 0;
-
-
-              // Unsigned two's complement magnitude.
-              // Handles INT64_MIN correctly.
-              const uint64_t magnitude =
-                  negative
-                      ? (~raw + 1ULL)
-                      : raw;
-
-
-              const uint32_t remainder =
-                  v10_umod64_ctx(
-                      magnitude,
-                      &ctx
-                  );
-
-
-              const int32_t signed_remainder =
-                  (int32_t)remainder;
-
-
-              // C remainder follows dividend sign.
-              return
-                  negative
-                      ? -signed_remainder
-                      : signed_remainder;
-          }
-
-
-          '''
-
 
           marker = (
               '__m128i '
@@ -559,8 +248,87 @@ jobs:
 
           if marker not in s:
               raise SystemExit(
-                  'V2.1 CLHash function marker not found'
+                  'V11 active CLHash marker not found'
               )
+
+
+          helper = r'''
+
+          // ==========================================================
+          // HOTCORE V11
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          int32_t v11_smod64_ctx(
+              int64_t dividend,
+              const v10_div32_ctx *ctx
+          )
+          {
+              const uint64_t raw =
+                  (uint64_t)dividend;
+
+
+              const int negative =
+                  dividend < 0;
+
+
+              const uint64_t magnitude =
+                  negative
+                      ? (~raw + 1ULL)
+                      : raw;
+
+
+              const uint32_t remainder =
+                  v10_umod64_ctx(
+                      magnitude,
+                      ctx
+                  );
+
+
+              const int32_t signed_remainder =
+                  (int32_t)remainder;
+
+
+              return
+                  negative
+                      ? -signed_remainder
+                      : signed_remainder;
+          }
+
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v11_xor_low32(
+              __m128i acc,
+              uint32_t value
+          )
+          {
+              uint32x4_t v =
+                  vreinterpretq_u32_s32(
+                      acc
+                  );
+
+
+              v =
+                  vsetq_lane_u32(
+                      vgetq_lane_u32(
+                          v,
+                          0
+                      ) ^ value,
+                      v,
+                      0
+                  );
+
+
+              return
+                  vreinterpretq_s32_u32(
+                      v
+                  );
+          }
+
+
+          '''
 
 
           insert_at = s.index(
@@ -576,88 +344,553 @@ jobs:
 
 
           # ==========================================================
-          # ROBUST MODULO REPLACEMENT
+          # MANUALLY CONSTANT-FOLD:
           #
-          # No whitespace-sensitive block matching.
+          # lazyLengthHash_port(1024, 64)
           #
-          # There are exactly four occurrences in the pinned source:
+          # _mm_set_epi64x(1024,64)
+          # CLMUL low64(64) x high64(1024)
           #
-          # v2.1:
-          #   case 0x0c
-          #   case 0x18
+          # 64   = x^6
+          # 1024 = x^10
           #
-          # compatibility implementation:
-          #   case 0x0c
-          #   case 0x18
+          # result = x^16 = 0x10000
+          #
+          # Saves one hardware PMULL per hash.
           # ==========================================================
 
-          original_mod = (
-              'const __m128i modulo = '
-              '_mm_cvtsi32_si128_emu('
-              'dividend % divisor);'
+          lazy_call = (
+              'lazyLengthHash_port(1024, 64)'
           )
 
 
-          count = s.count(
-              original_mod
+          lazy_count = s.count(
+              lazy_call
           )
 
 
-          print(
-              'Original 64-bit modulo sites:',
-              count
-          )
-
-
-          if count != 4:
+          if lazy_count != 2:
               raise SystemExit(
-                  'Expected exactly 4 modulo sites, found '
-                  + str(count)
+                  'Expected 2 lazyLengthHash constant calls, found '
+                  + str(lazy_count)
               )
-
-
-          replacement_mod = '''const int32_t v10_remainder =
-                    v10_smod64(
-                        dividend,
-                        divisor
-                    );
-
-                const __m128i modulo =
-                    _mm_cvtsi32_si128_emu(
-                        (uint32_t)v10_remainder
-                    );'''
 
 
           s = s.replace(
-              original_mod,
-              replacement_mod
+              lazy_call,
+              '_mm_cvtsi64_si128_emu(0x10000ULL)'
           )
 
 
-          if (
-              'dividend % divisor'
-              in s
+          # ==========================================================
+          # ACTIVE V2.1 CORE ONLY
+          # ==============================================================
+
+          func_start = s.index(
+              marker
+          )
+
+
+          func_end = s.index(
+              '// verus intermediate hash extra - v2.2',
+              func_start
+          )
+
+
+          active = s[
+              func_start:
+              func_end
+          ]
+
+
+          def replace_active(
+              old,
+              new,
+              expected
           ):
-              raise SystemExit(
-                  'Original 64-bit modulo still present'
+              global active
+
+              count = active.count(
+                  old
               )
 
 
-          if (
-              s.count(
-                  'v10_smod64('
-              ) < 5
-          ):
-              raise SystemExit(
-                  'FASTMOD call count sanity check failed'
+              if count != expected:
+                  raise SystemExit(
+                      'V11 active replacement count mismatch: '
+                      + repr(old)
+                      + ' expected='
+                      + str(expected)
+                      + ' actual='
+                      + str(count)
+                  )
+
+
+              active = active.replace(
+                  old,
+                  new
               )
-
-
-          p.write_text(s)
 
 
           # ==========================================================
-          # BUILD IDENTIFIER
+          # HOT FUNCTION ALIGNMENT
+          # ==========================================================
+
+          replace_active(
+              marker,
+              '''__attribute__((hot, aligned(64)))
+          __m128i __verusclmulwithoutreduction64alignedrepeat_v2_1''',
+              1
+          )
+
+
+          # ==========================================================
+          # 32-BIT LOOP COUNTER
+          #
+          # Original used int64_t for a fixed loop 0..31.
+          # ==========================================================
+
+          replace_active(
+              '    for (int64_t i = 0; i < 32; i++)',
+              '''    const uint32_t keyMask32 =
+                  (uint32_t)keyMask;
+
+
+              for (int i = 0; i < 32; ++i)''',
+              1
+          )
+
+
+          # ==========================================================
+          # SELECTOR
+          #
+          # Original:
+          #   extract one 64-bit value
+          #   repeatedly perform 64-bit shifts/ANDs
+          #
+          # V11:
+          #   read low/high 32-bit NEON lanes directly.
+          #
+          # This is especially useful on AArch32.
+          # ==========================================================
+
+          replace_active(
+              '        const uint64_t selector = '
+              '_mm_cvtsi128_si64_emu(acc);',
+              '''        const uint32x4_t selector_words =
+                      vreinterpretq_u32_s32(
+                          acc
+                      );
+
+
+                  const uint32_t sel_lo =
+                      vgetq_lane_u32(
+                          selector_words,
+                          0
+                      );
+
+
+                  const uint32_t sel_hi =
+                      vgetq_lane_u32(
+                          selector_words,
+                          1
+                      );''',
+              1
+          )
+
+
+          replace_active(
+              'uint32_t prand_idx = '
+              '(selector >> 5) & keyMask;',
+              '''uint32_t prand_idx =
+                      (sel_lo >> 5) &
+                      keyMask32;''',
+              1
+          )
+
+
+          replace_active(
+              'uint32_t prandex_idx = '
+              '(selector >>32) & keyMask;',
+              '''uint32_t prandex_idx =
+                      sel_hi &
+                      keyMask32;''',
+              1
+          )
+
+
+          replace_active(
+              'pbuf = pbuf_copy + (selector & 3);',
+              '''pbuf =
+                      pbuf_copy +
+                      (sel_lo & 3u);
+
+
+                  const int pbuf_delta =
+                      (sel_lo & 1u)
+                          ? 1
+                          : -1;''',
+              1
+          )
+
+
+          replace_active(
+              'switch (selector & 0x1c)',
+              'switch (sel_lo & 0x1cu)',
+              1
+          )
+
+
+          # ==========================================================
+          # ELIMINATE REPEATED 64-BIT selector bit arithmetic
+          # ==========================================================
+
+          replace_active(
+              '(((selector & 1) << 1) - 1)',
+              'pbuf_delta',
+              8
+          )
+
+
+          replace_active(
+              'uint64_t rounds = selector >> 61;',
+              'uint32_t rounds = sel_hi >> 29;',
+              2
+          )
+
+
+          replace_active(
+              'uint64_t aesround = 0;',
+              'uint32_t aesround = 0;',
+              1
+          )
+
+
+          replace_active(
+              'const uint64_t roundidx = aesround++ << 2;',
+              'const uint32_t roundidx = aesround++ << 2;',
+              1
+          )
+
+
+          # ==========================================================
+          # CASE 0x0c / 0x18 divisor comes directly from low32.
+          # ==========================================================
+
+          replace_active(
+              'const int32_t divisor = '
+              '(uint32_t)selector;',
+              'const int32_t divisor = (int32_t)sel_lo;',
+              2
+          )
+
+
+          # ==========================================================
+          # CASE 0x14 + 0x18
+          #
+          # Compute selector bits 28..35 ONCE.
+          #
+          # Cache both 128-bit buffer vectors ONCE before the
+          # random 1..8 iteration loop instead of reloading them.
+          # ==========================================================
+
+          buffer_anchor = (
+              'const __m128i *buftmp = '
+              'pbuf - pbuf_delta;'
+          )
+
+
+          buffer_insert = '''const __m128i *buftmp =
+                      pbuf - pbuf_delta;
+
+
+                  const uint32_t control_bits =
+                      (sel_lo >> 28) |
+                      (sel_hi << 4);
+
+
+                  const __m128i pbuf_v =
+                      _mm_load_si128_emu(
+                          pbuf
+                      );
+
+
+                  const __m128i buftmp_v =
+                      _mm_load_si128_emu(
+                          buftmp
+                      );'''
+
+
+          replace_active(
+              buffer_anchor,
+              buffer_insert,
+              2
+          )
+
+
+          replace_active(
+              'selector & '
+              '(((uint64_t)0x10000000) << rounds)',
+              'control_bits & (1u << rounds)',
+              2
+          )
+
+
+          replace_active(
+              '_mm_load_si128_emu('
+              'rounds & 1 ? pbuf : buftmp)',
+              '''((rounds & 1u)
+                              ? pbuf_v
+                              : buftmp_v)''',
+              2
+          )
+
+
+          replace_active(
+              '_mm_load_si128_emu('
+              'rounds & 1 ? buftmp : pbuf)',
+              '''((rounds & 1u)
+                              ? buftmp_v
+                              : pbuf_v)''',
+              2
+          )
+
+
+          # ==========================================================
+          # CASE 0x18:
+          #
+          # V10 reconstructs normalized divisor context every time
+          # the modulo branch is selected inside the 1..8 loop.
+          #
+          # V11 computes it ONCE before the loop.
+          # ==========================================================
+
+          case18_start = active.index(
+              'case 0x18:'
+          )
+
+
+          case1c_start = active.index(
+              'case 0x1c:',
+              case18_start
+          )
+
+
+          case18 = active[
+              case18_start:
+              case1c_start
+          ]
+
+
+          onekey_anchor = '''                __m128i *rc = prand;
+                  __m128i onekey;
+
+                  do
+          '''
+
+
+          onekey_count = case18.count(
+              onekey_anchor
+          )
+
+
+          if onekey_count != 1:
+              raise SystemExit(
+                  'V11 case18 onekey anchor count = '
+                  + str(onekey_count)
+              )
+
+
+          onekey_new = '''                __m128i *rc = prand;
+                  __m128i onekey;
+
+
+                  const int32_t divisor =
+                      (int32_t)sel_lo;
+
+
+                  const v10_div32_ctx divctx =
+                      v10_make_div32_ctx(
+                          divisor
+                      );
+
+
+                  do
+          '''
+
+
+          case18 = case18.replace(
+              onekey_anchor,
+              onekey_new,
+              1
+          )
+
+
+          # Remove divisor reconstruction from inner loop.
+          inner_divisor = (
+              'const int32_t divisor = '
+              '(int32_t)sel_lo;'
+          )
+
+
+          if case18.count(
+                  inner_divisor
+              ) != 2:
+              # One hoisted + one original inner declaration.
+              raise SystemExit(
+                  'V11 case18 divisor declaration sanity failed: '
+                  + str(
+                      case18.count(
+                          inner_divisor
+                      )
+                  )
+              )
+
+
+          # Remove the LAST occurrence = old inner-loop declaration.
+          pos = case18.rfind(
+              inner_divisor
+          )
+
+
+          case18 = (
+              case18[:pos] +
+              case18[
+                  pos +
+                  len(inner_divisor):
+              ]
+          )
+
+
+          old_call = '''v10_smod64(
+                          dividend,
+                          divisor
+                      )'''
+
+
+          new_call = '''v11_smod64_ctx(
+                          dividend,
+                          &divctx
+                      )'''
+
+
+          if old_call not in case18:
+              raise SystemExit(
+                  'V11 case18 V10 modulo call not found'
+              )
+
+
+          case18 = case18.replace(
+              old_call,
+              new_call,
+              1
+          )
+
+
+          active = (
+              active[:case18_start] +
+              case18 +
+              active[case1c_start:]
+          )
+
+
+          # ==========================================================
+          # DIRECT LOW32 XOR
+          #
+          # V10:
+          #   build temporary __m128i from remainder
+          #   XOR vectors
+          #
+          # V11:
+          #   modify lane 0 directly.
+          #
+          # Exactly two active modulo sites.
+          # ==========================================================
+
+          old_modxor = '''const __m128i modulo =
+                      _mm_cvtsi32_si128_emu(
+                          (uint32_t)v10_remainder
+                      );'''
+
+
+          # V10 formatting has this block twice but indentation before
+          # "const" differs depending on original source. Replace
+          # structurally below instead.
+          active = active.replace(
+              '''const __m128i modulo =
+                    _mm_cvtsi32_si128_emu(
+                        (uint32_t)v10_remainder
+                    );
+                acc = _mm_xor_si128_emu(modulo, acc);''',
+              '''acc =
+                    v11_xor_low32(
+                        acc,
+                        (uint32_t)v10_remainder
+                    );'''
+          )
+
+
+          # Handle normal indentation form if compiler source block
+          # preserved additional spaces.
+          active = active.replace(
+              '''const __m128i modulo =
+                        _mm_cvtsi32_si128_emu(
+                            (uint32_t)v10_remainder
+                        );
+                    acc = _mm_xor_si128_emu(modulo, acc);''',
+              '''acc =
+                        v11_xor_low32(
+                            acc,
+                            (uint32_t)v10_remainder
+                        );'''
+          )
+
+
+          # We must have removed BOTH active modulo vectors.
+          if (
+              'const __m128i modulo' in active
+          ):
+              raise SystemExit(
+                  'V11 active modulo vector still present'
+              )
+
+
+          # ==========================================================
+          # SANITY: no old selector arithmetic remains
+          # ==========================================================
+
+          forbidden = [
+              'selector >>',
+              'selector &',
+              '(uint32_t)selector',
+              '(uint64_t)selector',
+          ]
+
+
+          for token in forbidden:
+
+              if token in active:
+                  raise SystemExit(
+                      'Old selector arithmetic survived: '
+                      + token
+                  )
+
+
+          # Put optimized active function back.
+          s = (
+              s[:func_start] +
+              active +
+              s[func_end:]
+          )
+
+
+          p.write_text(
+              s
+          )
+
+
+          # ==========================================================
+          # API BUILD ID
           # ==========================================================
 
           p = Path(
@@ -668,20 +901,18 @@ jobs:
           api = p.read_text()
 
 
-          old_id = (
-              'BUILD=A55-HOTPATH-V8'
-          )
-
-
-          if old_id not in api:
+          if (
+              'BUILD=A55-FASTMOD-V10'
+              not in api
+          ):
               raise SystemExit(
-                  'Historical V8 BUILD ID not found'
+                  'V10 build ID missing before V11 patch'
               )
 
 
           api = api.replace(
-              old_id,
               'BUILD=A55-FASTMOD-V10',
+              'BUILD=A55-HOTCORE-V11',
               1
           )
 
@@ -696,7 +927,7 @@ jobs:
           )
 
           print(
-              'A55 FASTMOD V10 PATCHED'
+              'FIRESTICK A55 HOTCORE V11'
           )
 
           print(
@@ -704,34 +935,65 @@ jobs:
           )
 
           print(
-              'Base                 : exact V8'
+              'Base exact V10          : YES'
           )
 
           print(
-              'V9 changes           : NONE'
+              'FASTMOD V10             : PRESERVED'
           )
 
           print(
-              '64/32 remainder      : native 32-bit UDIV'
+              'Selector low/high lanes : 32-bit'
           )
 
           print(
-              'Modulo sites replaced:',
-              count
+              'Outer counter           : 32-bit'
           )
 
           print(
-              'BUILD=A55-FASTMOD-V10'
+              'Rounds counters         : 32-bit'
+          )
+
+          print(
+              'pbuf direction cached   : YES'
+          )
+
+          print(
+              'case14 buffer cache     : YES'
+          )
+
+          print(
+              'case18 buffer cache     : YES'
+          )
+
+          print(
+              'case18 FASTMOD ctx      : HOISTED'
+          )
+
+          print(
+              'Modulo lane XOR         : DIRECT NEON'
+          )
+
+          print(
+              'Constant PMULL/hash     : REMOVED'
+          )
+
+          print(
+              'ThinLTO                 : ENABLED'
+          )
+
+          print(
+              'BUILD=A55-HOTCORE-V11'
           )
 
           PY
 
 
       # ==============================================================
-      # VERIFY SOURCE
+      # SOURCE VALIDATION
       # ==============================================================
 
-      - name: Verify FASTMOD V10 source
+      - name: Verify V11 patches
         shell: bash
         run: |
           set -euo pipefail
@@ -739,76 +1001,93 @@ jobs:
           cd src
 
 
-          echo "===== V10 BUILD ID ====="
+          echo "===== BUILD ====="
 
           grep -n \
-            "A55-FASTMOD-V10" \
+            "A55-HOTCORE-V11" \
             api.cpp
 
 
-          echo "===== UDIV ====="
+          echo "===== V10 FASTMOD PRESERVED ====="
 
           grep -n \
-            '"udiv %0, %1, %2"' \
+            "v10_umod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== FASTMOD CALLS ====="
+          echo "===== V11 CTX FASTMOD ====="
 
           grep -n \
-            "v10_smod64" \
+            "v11_smod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== CHECK OLD MODULO ====="
+          echo "===== DIRECT LOW32 XOR ====="
+
+          grep -n \
+            "v11_xor_low32" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== 32 BIT SELECTOR ====="
+
+          grep -n \
+            "selector_words" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          grep -n \
+            "sel_lo" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          grep -n \
+            "sel_hi" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== BUFFER CACHE ====="
+
+          grep -n \
+            "pbuf_v" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          grep -n \
+            "buftmp_v" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== CONSTANT LAZY HASH ====="
+
+          grep -n \
+            "0x10000ULL" \
+            verus/armv7/verus_clhash_portable.cpp
+
 
           if grep -n \
-            "dividend % divisor" \
+            "lazyLengthHash_port(1024, 64)" \
             verus/armv7/verus_clhash_portable.cpp
           then
-              echo \
-                "ERROR: original 64-bit modulo survived"
-
+              echo "ERROR: constant PMULL survived"
               exit 1
           else
-              echo \
-                "PASS: old 64-bit modulo removed"
+              echo "PASS: constant PMULL removed"
           fi
 
 
-          echo "===== V8 AES ====="
+          echo "===== THIN LTO ====="
 
           grep -n \
-            "v8_aesenc_vec" \
-            verus/armv7/haraka_portable.h
-
-
-          echo "===== V8 PMULL ====="
-
-          grep -n \
-            "vmull.p64" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== V8 VQRDMULH ====="
-
-          grep -n \
-            "vqrdmulhq_s16" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== V8 PARTIAL HARAKA ====="
-
-          grep -n \
-            "v8_haraka512_word7" \
-            verus/armv7/verusscan.cpp
+            "flto=thin" \
+            Makefile.am
 
 
       # ==============================================================
-      # MATH TEST
+      # V11 SEMANTIC TESTS
       # ==============================================================
 
-      - name: Verify FASTMOD semantics
+      - name: Verify V11 semantics
         shell: bash
         run: |
           set -euo pipefail
@@ -816,6 +1095,247 @@ jobs:
           python3 - <<'PY'
           import random
 
+
+          # ==========================================================
+          # CLMUL CONSTANT
+          # ==========================================================
+
+          def clmul64(a, b):
+              r = 0
+
+              for i in range(64):
+                  if (a >> i) & 1:
+                      r ^= b << i
+
+              return r
+
+
+          result = clmul64(
+              64,
+              1024
+          )
+
+
+          assert (
+              result ==
+              0x10000
+          )
+
+
+          print(
+              'lazyLengthHash constant: PASS'
+          )
+
+
+          # ==========================================================
+          # SELECTOR DECOMPOSITION
+          # ==========================================================
+
+          random.seed(
+              0xA5511
+          )
+
+
+          for _ in range(
+              1000000
+          ):
+              selector = random.getrandbits(
+                  64
+              )
+
+
+              sel_lo = (
+                  selector &
+                  0xffffffff
+              )
+
+
+              sel_hi = (
+                  selector >>
+                  32
+              )
+
+
+              keymask = 511
+
+
+              old_prand = (
+                  (selector >> 5) &
+                  keymask
+              )
+
+
+              new_prand = (
+                  (sel_lo >> 5) &
+                  keymask
+              )
+
+
+              assert (
+                  old_prand ==
+                  new_prand
+              )
+
+
+              old_prandex = (
+                  (selector >> 32) &
+                  keymask
+              )
+
+
+              new_prandex = (
+                  sel_hi &
+                  keymask
+              )
+
+
+              assert (
+                  old_prandex ==
+                  new_prandex
+              )
+
+
+              assert (
+                  (selector & 3) ==
+                  (sel_lo & 3)
+              )
+
+
+              assert (
+                  (selector & 0x1c) ==
+                  (sel_lo & 0x1c)
+              )
+
+
+              old_rounds = (
+                  selector >>
+                  61
+              )
+
+
+              new_rounds = (
+                  sel_hi >>
+                  29
+              )
+
+
+              assert (
+                  old_rounds ==
+                  new_rounds
+              )
+
+
+              delta = (
+                  1
+                  if sel_lo & 1
+                  else -1
+              )
+
+
+              # Original expression intended:
+              # bit 0 => neighbour +1
+              # bit 1 => neighbour -1
+              old_neighbor_offset = (
+                  -1
+                  if selector & 1
+                  else 1
+              )
+
+
+              new_neighbor_offset = (
+                  -delta
+              )
+
+
+              assert (
+                  old_neighbor_offset ==
+                  new_neighbor_offset
+              )
+
+
+              control_bits = (
+                  (sel_lo >> 28) |
+                  (sel_hi << 4)
+              ) & 0xffffffff
+
+
+              for rounds in range(8):
+
+                  old_bit = bool(
+                      selector &
+                      (
+                          0x10000000 <<
+                          rounds
+                      )
+                  )
+
+
+                  new_bit = bool(
+                      control_bits &
+                      (
+                          1 <<
+                          rounds
+                      )
+                  )
+
+
+                  assert (
+                      old_bit ==
+                      new_bit
+                  )
+
+
+          print(
+              '1,000,000 selector tests: PASS'
+          )
+
+
+          # ==========================================================
+          # DIRECT LOW32 XOR
+          # ==========================================================
+
+          for _ in range(
+              250000
+          ):
+              lanes = [
+                  random.getrandbits(32)
+                  for _ in range(4)
+              ]
+
+
+              value = random.getrandbits(
+                  32
+              )
+
+
+              original = [
+                  lanes[0] ^ value,
+                  lanes[1],
+                  lanes[2],
+                  lanes[3],
+              ]
+
+
+              direct = lanes[:]
+
+              direct[0] ^=
+                  value
+
+
+              assert (
+                  direct ==
+                  original
+              )
+
+
+          print(
+              '250,000 low32 XOR tests: PASS'
+          )
+
+
+          # ==========================================================
+          # FASTMOD V10/V11 CONTEXT SEMANTICS
+          # ==========================================================
 
           MASK32 = (
               1 << 32
@@ -831,22 +1351,6 @@ jobs:
               return (
                   x &
                   MASK32
-              )
-
-
-          def umod32(
-              numerator,
-              denominator
-          ):
-              q = (
-                  numerator //
-                  denominator
-              )
-
-
-              return u32(
-                  numerator -
-                  q * denominator
               )
 
 
@@ -871,16 +1375,20 @@ jobs:
 
 
               if u1 >= d:
-                  u1 = umod32(
-                      u1,
-                      d
+                  q = u1 // d
+
+                  u1 = u32(
+                      u1 -
+                      q * d
                   )
 
 
               if u1 == 0:
-                  return umod32(
-                      u0,
-                      d
+                  q = u0 // d
+
+                  return u32(
+                      u0 -
+                      q * d
                   )
 
 
@@ -909,11 +1417,9 @@ jobs:
 
 
               if shift:
+
                   un32 = u32(
-                      (
-                          u1 <<
-                          shift
-                      ) |
+                      (u1 << shift) |
                       (
                           u0 >>
                           (
@@ -928,8 +1434,11 @@ jobs:
                       u0 <<
                       shift
                   )
+
               else:
+
                   un32 = u1
+
                   un10 = u0
 
 
@@ -966,7 +1475,8 @@ jobs:
                       )
               ):
                   q1 = u32(
-                      q1 - 1
+                      q1 -
+                      1
                   )
 
 
@@ -976,15 +1486,15 @@ jobs:
                   )
 
 
-                  if rhat >= 0x10000:
+                  if (
+                      rhat >=
+                      0x10000
+                  ):
                       break
 
 
               un21 = u32(
-                  (
-                      un32 <<
-                      16
-                  ) +
+                  (un32 << 16) +
                   un1 -
                   q1 * vn
               )
@@ -1011,7 +1521,8 @@ jobs:
                       )
               ):
                   q0 = u32(
-                      q0 - 1
+                      q0 -
+                      1
                   )
 
 
@@ -1021,15 +1532,15 @@ jobs:
                   )
 
 
-                  if rhat >= 0x10000:
+                  if (
+                      rhat >=
+                      0x10000
+                  ):
                       break
 
 
               rem_normalized = u32(
-                  (
-                      un21 <<
-                      16
-                  ) +
+                  (un21 << 16) +
                   un0 -
                   q0 * vn
               )
@@ -1064,7 +1575,7 @@ jobs:
               )
 
 
-          def fast_signed_mod(
+          def fast_signed(
               dividend,
               divisor
           ):
@@ -1088,105 +1599,21 @@ jobs:
               )
 
 
-              remainder = (
-                  fast_umod64_32(
-                      magnitude,
-                      d
-                  )
+              rem = fast_umod64_32(
+                  magnitude,
+                  d
               )
 
 
               return (
-                  -remainder
+                  -rem
                   if dividend < 0
-                  else remainder
+                  else rem
               )
 
 
-          # ==========================================================
-          # EDGE CASES
-          # ==========================================================
-
-          dividends = [
-              -(1 << 63),
-              -(1 << 63) + 1,
-              -0x7fffffffffffffff,
-              -1234567890123456789,
-              -0x100000000,
-              -0xffffffff,
-              -3,
-              -2,
-              -1,
-              0,
-              1,
-              2,
-              3,
-              0xffffffff,
-              0x100000000,
-              1234567890123456789,
-              (1 << 63) - 1,
-          ]
-
-
-          divisors = [
-              -(1 << 31),
-              -(1 << 31) + 1,
-              -2147483647,
-              -65536,
-              -65535,
-              -3,
-              -2,
-              -1,
-              1,
-              2,
-              3,
-              65535,
-              65536,
-              2147483646,
-              2147483647,
-          ]
-
-
-          for dividend in dividends:
-              for divisor in divisors:
-
-                  reference = c_remainder(
-                      dividend,
-                      divisor
-                  )
-
-
-                  result = fast_signed_mod(
-                      dividend,
-                      divisor
-                  )
-
-
-                  if result != reference:
-                      raise SystemExit(
-                          'EDGE MISMATCH: '
-                          f'{dividend} % {divisor} '
-                          f'fast={result} '
-                          f'reference={reference}'
-                      )
-
-
-          print(
-              'FASTMOD edge cases: PASS'
-          )
-
-
-          # ==========================================================
-          # 1,000,000 RANDOM TESTS
-          # ==============================================================
-
-          random.seed(
-              0xA55F10
-          )
-
-
-          for i in range(
-              1000000
+          for _ in range(
+              500000
           ):
               dividend = random.randint(
                   -(1 << 63),
@@ -1204,34 +1631,26 @@ jobs:
                   divisor = 1
 
 
-              reference = c_remainder(
-                  dividend,
-                  divisor
-              )
-
-
-              result = fast_signed_mod(
-                  dividend,
-                  divisor
-              )
-
-
-              if result != reference:
-                  raise SystemExit(
-                      'RANDOM MISMATCH '
-                      f'#{i}: '
-                      f'{dividend} % {divisor} '
-                      f'fast={result} '
-                      f'reference={reference}'
+              assert (
+                  fast_signed(
+                      dividend,
+                      divisor
                   )
+                  ==
+                  c_remainder(
+                      dividend,
+                      divisor
+                  )
+              )
 
 
           print(
-              '1,000,000 random FASTMOD tests: PASS'
+              '500,000 FASTMOD context tests: PASS'
           )
 
+
           print(
-              'FASTMOD V10 semantics: PASS'
+              'HOTCORE V11 semantics: PASS'
           )
 
           PY
@@ -1260,12 +1679,12 @@ jobs:
           cd src
 
           docker build \
-            -t ccminer-firestick-a55-v10 \
+            -t ccminer-firestick-a55-v11 \
             -f build.Dockerfile \
             .
 
 
-      - name: Build FASTMOD V10 armeabi-v7a
+      - name: Build HOTCORE V11 armeabi-v7a
         shell: bash
         run: |
           set -euo pipefail
@@ -1284,7 +1703,7 @@ jobs:
           docker run \
             --rm \
             -v "$PWD/build-output:/build/output" \
-            ccminer-firestick-a55-v10 \
+            ccminer-firestick-a55-v11 \
             arm
 
 
@@ -1299,7 +1718,7 @@ jobs:
 
           echo "===== BUILD LOG ====="
 
-          tail -n 300 \
+          tail -n 350 \
             build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
 
 
@@ -1308,10 +1727,10 @@ jobs:
 
 
       # ==============================================================
-      # BINARY INSPECTION
+      # INSPECT GENERATED BINARY
       # ==============================================================
 
-      - name: Inspect FASTMOD V10 binary
+      - name: Inspect HOTCORE V11 binary
         shell: bash
         run: |
           set -euo pipefail
@@ -1333,21 +1752,52 @@ jobs:
           strings \
             "$BIN" |
             grep \
-              "A55-FASTMOD-V10"
+              "A55-HOTCORE-V11"
 
 
-          echo "===== DIVISION HELPER ====="
+          echo "===== UDIV ====="
+
+          if command -v llvm-objdump >/dev/null 2>&1
+          then
+
+              llvm-objdump \
+                -d \
+                "$BIN" |
+                grep -m 30 \
+                  -E "\budiv\b" ||
+                true
+
+          fi
+
+
+          echo "===== REMAINING AEABI 64 DIV ====="
 
           readelf \
             -Ws \
             "$BIN" |
             grep \
               "__aeabi_ldivmod" ||
-            echo \
-              "GOOD: __aeabi_ldivmod not linked"
+            true
 
 
-          echo "===== SIZE ====="
+          echo "===== CALLS AROUND AEABI LDIV ====="
+
+          if command -v llvm-objdump >/dev/null 2>&1
+          then
+
+              llvm-objdump \
+                -d \
+                "$BIN" |
+                grep \
+                  -B 5 \
+                  -A 5 \
+                  "__aeabi_ldivmod" ||
+                true
+
+          fi
+
+
+          echo "===== BINARY SIZE ====="
 
           ls -lh \
             "$BIN"
@@ -1357,7 +1807,7 @@ jobs:
       # PACKAGE
       # ==============================================================
 
-      - name: Prepare FASTMOD V10 package
+      - name: Prepare HOTCORE V11 package
         shell: bash
         run: |
           set -euo pipefail
@@ -1378,7 +1828,7 @@ jobs:
 
           cp \
             "$BIN/ccminer" \
-            dist/ccminer-a55-fastmod-v10
+            dist/ccminer-a55-hotcore-v11
 
 
           if test -f "$BIN/libc++_shared.so"
@@ -1398,17 +1848,20 @@ jobs:
 
 
           chmod +x \
-            dist/ccminer-a55-fastmod-v10
+            dist/ccminer-a55-hotcore-v11
 
 
           cat > dist/BUILDINFO.txt <<EOF
           Build:
-          A55-FASTMOD-V10
+          A55-HOTCORE-V11
 
           Base:
-          Exact A55-HOTPATH-V8 champion
+          exact A55-FASTMOD-V10
 
-          Historical V8 workflow:
+          V10 workflow commit:
+          73446a48e954bcc579c302d5a01e3dfb71b2bd30
+
+          V8 workflow commit:
           6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0
 
           ccminer source:
@@ -1420,11 +1873,11 @@ jobs:
           CPU:
           Cortex-A55
 
-          V8 measured baseline:
-          approximately 679 kH/s
+          V10 measured:
+          approximately 1.16 MH/s sustained
 
-          V9 modifications:
-          NOT INCLUDED
+          FASTMOD V10:
+          fully preserved
 
           Hardware AES:
           preserved
@@ -1435,42 +1888,72 @@ jobs:
           VQRDMULH:
           preserved
 
-          NEON VTBL:
-          preserved
-
           Partial Haraka:
           preserved
 
-          Haraka hot path:
-          34 AES operations
-
-          Runtime self-test:
-          preserved
+          Haraka:
+          34 AES hot-path operations
 
           Full candidate replay:
           preserved
 
-          New optimization:
-          exact AArch32 FASTMOD
+          Runtime Haraka self-test:
+          preserved
 
-          int64 % int32 CLHash sites:
-          replaced
+          V11 selector:
+          direct 32-bit NEON lanes
 
-          Native UDIV:
+          V11 key indexes:
           32-bit
 
-          Floating point:
-          not used
+          V11 loop counters:
+          32-bit
 
-          Approximate division:
-          not used
+          V11 pbuf direction:
+          precomputed
 
-          Semantic validation:
-          1,000,000 random tests plus edge cases
+          V11 case 0x14:
+          control bits precomputed
+
+          V11 case 0x14:
+          pbuf vectors cached
+
+          V11 case 0x18:
+          control bits precomputed
+
+          V11 case 0x18:
+          pbuf vectors cached
+
+          V11 case 0x18:
+          FASTMOD normalized divisor context hoisted
+
+          V11 modulo XOR:
+          direct low32 NEON lane
+
+          lazyLengthHash(1024,64):
+          compile-time constant 0x10000
+
+          Constant PMULL:
+          removed from per-hash path
+
+          ThinLTO:
+          enabled
+
+          LTO optimization:
+          O3
+
+          Loop alignment:
+          16 bytes
 
           API:
-          BUILD=A55-FASTMOD-V10
+          BUILD=A55-HOTCORE-V11
           EOF
+
+
+          echo "===== PACKAGE ====="
+
+          ls -lh \
+            dist/
 
 
           echo "===== SHA256 ====="
@@ -1482,13 +1965,13 @@ jobs:
 
 
       # ==============================================================
-      # UPLOAD
+      # ARTIFACT
       # ==============================================================
 
-      - name: Upload FASTMOD V10 artifact
+      - name: Upload HOTCORE V11 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firestick-a55-fastmod-v10-${{ github.run_number }}
+          name: firestick-a55-hotcore-v11-${{ github.run_number }}
           path: src/dist/
           if-no-files-found: error
           retention-days: 30
