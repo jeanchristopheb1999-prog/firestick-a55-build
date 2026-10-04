@@ -13,7 +13,7 @@ jobs:
     steps:
 
       # ==============================================================
-      # EXACT HISTORICAL BASES REQUIRED TO RECREATE V11 #33
+      # EXACT BASES NEEDED BY THE SUCCESSFUL V12 #34 PATCH
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -32,7 +32,7 @@ jobs:
           path: v10-base
 
 
-      - name: Checkout V11 run 30 base
+      - name: Checkout V11 development base
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
@@ -48,6 +48,19 @@ jobs:
           path: v11-builder
 
 
+      # ==============================================================
+      # IMPORTANT:
+      # THIS IS THE V12 #34 WORKFLOW WHOSE SOURCE PATCH ALREADY PASSED.
+      # ==============================================================
+
+      - name: Checkout successful V12 patch source
+        uses: actions/checkout@v4
+        with:
+          repository: jeanchristopheb1999-prog/firestick-a55-build
+          ref: 50ac3037b54d6f045e534af8b04a2ddf571ae844
+          path: v12-base
+
+
       - name: Checkout pinned ccminer source
         uses: actions/checkout@v4
         with:
@@ -57,10 +70,16 @@ jobs:
 
 
       # ==============================================================
-      # REBUILD EXACT V11 #33
+      # REPLAY ONLY THE TWO BLOCKS THAT ALREADY PASSED IN RUN #34
+      #
+      # block 0 = exact V11 #33 reconstruction
+      # block 1 = QCFAST V12 source patch
+      #
+      # block 2 = old broken Python test
+      #           -> deliberately NOT executed
       # ==============================================================
 
-      - name: Replay exact V11 33
+      - name: Replay proven V12 source patch
         shell: bash
         run: |
           set -euo pipefail
@@ -73,7 +92,7 @@ jobs:
 
 
           workflow = Path(
-              '../v11-builder/.github/workflows/firestick-a55.yml'
+              '../v12-base/.github/workflows/firestick-a55.yml'
           ).read_text()
 
 
@@ -103,7 +122,7 @@ jobs:
                   if end is None:
 
                       raise SystemExit(
-                          'Unterminated V11 Python block'
+                          'Unterminated Python block'
                       )
 
 
@@ -123,10 +142,10 @@ jobs:
                   i += 1
 
 
-          if len(blocks) < 2:
+          if len(blocks) < 3:
 
               raise SystemExit(
-                  'Expected at least 2 V11 blocks, found '
+                  'Expected 3 V12 blocks, found '
                   + str(len(blocks))
               )
 
@@ -147,7 +166,7 @@ jobs:
           exec(
               compile(
                   blocks[0],
-                  'v11-33-source.py',
+                  'v12-replay-v11.py',
                   'exec'
               ),
               {
@@ -164,722 +183,77 @@ jobs:
           if 'BUILD=A55-HOTCORE-V11' not in api:
 
               raise SystemExit(
-                  'Exact V11 #33 replay failed'
+                  'V11 #33 reconstruction failed'
               )
 
 
           print(
-              'EXACT V11 #33 REPLAY: PASS'
-          )
-
-          PY
-
-
-      # ==============================================================
-      # QCFAST V12
-      # ==============================================================
-
-      - name: Patch QCFAST V12
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd src
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-
-          path = Path(
-              'verus/armv7/verus_clhash_portable.cpp'
+              'EXACT V11 #33: PASS'
           )
 
 
-          s = path.read_text()
+          print(
+              '======================================'
+          )
 
+          print(
+              'REPLAY PROVEN V12 #34 PATCH'
+          )
 
-          exact_name = (
-              '__verusclmulwithoutreduction64alignedrepeat_v2_1'
+          print(
+              '======================================'
           )
 
 
-          fast_name = (
-              '__verusclmulwithoutreduction64alignedrepeat_v12_fast'
+          exec(
+              compile(
+                  blocks[1],
+                  'v12-qcfast-source.py',
+                  'exec'
+              ),
+              {
+                  '__name__': '__main__',
+              }
           )
 
 
-          # ==========================================================
-          # LOCATE EXACT V11 HOT FUNCTION
-          # ==========================================================
-
-          name_pos = s.index(
-              exact_name
-          )
+          api = Path(
+              'api.cpp'
+          ).read_text()
 
 
-          function_start = s.rfind(
-              '__m128i ',
-              0,
-              name_pos + 1
-          )
-
-
-          if function_start < 0:
+          if 'BUILD=A55-QCFAST-V12' not in api:
 
               raise SystemExit(
-                  'Could not locate V11 exact function start'
+                  'V12 BUILD ID missing'
               )
 
 
-          function_end = s.index(
-              '// verus intermediate hash extra - v2.2',
-              name_pos
-          )
+          clhash = Path(
+              'verus/armv7/verus_clhash_portable.cpp'
+          ).read_text()
 
 
-          exact_function = s[
-              function_start:
-              function_end
+          required = [
+              'v12_mulhrs_fast',
+              'v12_read_fpscr',
+              'v12_write_fpscr',
+              'v12_clear_qc',
+              'v12_probe_qc',
+              'v12_rollback_key',
+              '__verusclmulwithoutreduction64alignedrepeat_v12_fast',
+              'V12_FPSCR_QC',
           ]
 
 
-          exact_mulhrs_count = exact_function.count(
-              '_mm_mulhrs_epi16_emu('
-          )
+          for token in required:
 
+              if token not in clhash:
 
-          if exact_mulhrs_count != 13:
-
-              raise SystemExit(
-                  'Expected 13 static mulhrs sites in V11, found '
-                  + str(exact_mulhrs_count)
-              )
-
-
-          print(
-              'V11 exact mulhrs sites:',
-              exact_mulhrs_count
-          )
-
-
-          # ==========================================================
-          # RAW VQRDMULH
-          #
-          # This is deliberately NOT x86-exact when ARM saturation
-          # occurs.
-          #
-          # FPSCR.QC catches that exceptional case.
-          # ==========================================================
-
-          helpers = r'''
-
-          // ==========================================================
-          // A55 QCFAST V12
-          // ==========================================================
-
-          #define V12_FPSCR_QC 0x08000000u
-
-
-          static inline
-          __attribute__((always_inline))
-          __m128i v12_mulhrs_fast(
-              __m128i a,
-              __m128i b
-          )
-          {
-              const int16x8_t va =
-                  vreinterpretq_s16_m128i(
-                      a
-                  );
-
-
-              const int16x8_t vb =
-                  vreinterpretq_s16_m128i(
-                      b
-                  );
-
-
-              const int16x8_t result =
-                  vqrdmulhq_s16(
-                      va,
-                      vb
-                  );
-
-
-              return
-                  vreinterpretq_m128i_s16(
-                      result
-                  );
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          uint32_t v12_read_fpscr()
-          {
-              uint32_t value;
-
-
-              __asm__ volatile(
-                  "vmrs %0, fpscr"
-                  : "=r"(value)
-              );
-
-
-              return value;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          void v12_write_fpscr(
-              uint32_t value
-          )
-          {
-              __asm__ volatile(
-                  "vmsr fpscr, %0"
-                  :
-                  : "r"(value)
-                  : "memory"
-              );
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          void v12_clear_qc()
-          {
-              const uint32_t fpscr =
-                  v12_read_fpscr();
-
-
-              v12_write_fpscr(
-                  fpscr &
-                  ~V12_FPSCR_QC
-              );
-          }
-
-
-          // Force a real VQRDMULH saturation once per mining thread.
-          // If the hardware/OS does not expose QC correctly,
-          // QCFAST is disabled automatically.
-          static volatile int16_t
-          v12_probe_operand = (int16_t)-32768;
-
-
-          static inline
-          __attribute__((noinline))
-          int v12_probe_qc()
-          {
-              v12_clear_qc();
-
-
-              const int16_t probe_value =
-                  v12_probe_operand;
-
-
-              const int16x8_t probe_vector =
-                  vdupq_n_s16(
-                      probe_value
-                  );
-
-
-              const int16x8_t probe_result =
-                  vqrdmulhq_s16(
-                      probe_vector,
-                      probe_vector
-                  );
-
-
-              volatile int16_t sink =
-                  vgetq_lane_s16(
-                      probe_result,
-                      0
-                  );
-
-
-              (void)sink;
-
-
-              const uint32_t flags =
-                  v12_read_fpscr();
-
-
-              v12_clear_qc();
-
-
-              return
-                  (flags & V12_FPSCR_QC)
-                      ? 1
-                      : 0;
-          }
-
-
-          // Roll back the mutations produced by a failed FAST attempt.
-          // This is only used:
-          //   - during one-time validation
-          //   - if QC reports a rare saturation.
-          static inline
-          __attribute__((always_inline))
-          void v12_rollback_key(
-              __m128i *randomsource,
-              uint32_t *fixrand,
-              uint32_t *fixrandex,
-              __m128i *g_prand,
-              __m128i *g_prandex
-          )
-          {
-          #pragma clang loop unroll(full)
-              for (
-                  int i = 31;
-                  i >= 0;
-                  --i
-              )
-              {
-                  randomsource[
-                      fixrandex[i]
-                  ] =
-                      g_prandex[i];
-
-
-                  randomsource[
-                      fixrand[i]
-                  ] =
-                      g_prand[i];
-              }
-          }
-
-
-          static __thread int
-          v12_qc_mode = 0;
-
-          //  0 = hardware QC not tested yet
-          //  1 = QCFAST validated and enabled
-          //  2 = QC works; waiting for clean fast/exact validation hash
-          // -1 = permanent exact V11 fallback
-
-
-          '''
-
-
-          # ==========================================================
-          # CREATE FAST CLHASH COPY
-          #
-          # Everything stays IDENTICAL to V11 except mulhrs.
-          # ==========================================================
-
-          fast_function = exact_function.replace(
-              exact_name,
-              fast_name,
-              1
-          )
-
-
-          fast_function = fast_function.replace(
-              '_mm_mulhrs_epi16_emu(',
-              'v12_mulhrs_fast('
-          )
-
-
-          if (
-              fast_function.count(
-                  'v12_mulhrs_fast('
-              )
-              != 13
-          ):
-
-              raise SystemExit(
-                  'V12 fast function did not replace all mulhrs sites'
-              )
-
-
-          if (
-              '_mm_mulhrs_epi16_emu('
-              in fast_function
-          ):
-
-              raise SystemExit(
-                  'Exact mulhrs survived inside V12 FAST copy'
-              )
-
-
-          # Insert helpers + duplicate immediately before v2.2 wrapper.
-          s = (
-              s[:function_end]
-              + helpers
-              + '\n'
-              + fast_function
-              + '\n'
-              + s[function_end:]
-          )
-
-
-          # ==========================================================
-          # REPLACE v2.2 WRAPPER
-          #
-          # Normal hash:
-          #   FAST CLHash
-          #   one FPSCR read
-          #
-          # If QC=1:
-          #   rollback FAST mutations
-          #   rerun exact V11 CLHash
-          #
-          # First clean hash:
-          #   FAST + exact are both computed and compared.
-          # ==========================================================
-
-          wrapper_start = s.index(
-              'uint64_t verusclhashv2_2('
-          )
-
-
-          wrapper_close = s.index(
-              '\n}',
-              wrapper_start
-          ) + 2
-
-
-          wrapper = r'''uint64_t verusclhashv2_2(
-              void *random,
-              const unsigned char buf[64],
-              uint64_t keyMask,
-              uint32_t * __restrict fixrand,
-              uint32_t * __restrict fixrandex,
-              __m128i *g_prand,
-              __m128i *g_prandex
-          )
-          {
-              __m128i *rs64 =
-                  (__m128i *)random;
-
-
-              const __m128i *string =
-                  (const __m128i *)buf;
-
-
-              // ======================================================
-              // ONE-TIME HARDWARE QC PROBE
-              // ======================================================
-
-              if (__builtin_expect(
-                      v12_qc_mode == 0,
-                      0
-                  ))
-              {
-                  if (v12_probe_qc())
-                  {
-                      v12_qc_mode = 2;
-                  }
-                  else
-                  {
-                      v12_qc_mode = -1;
-                  }
-              }
-
-
-              __m128i acc;
-
-
-              // ======================================================
-              // SAFE PERMANENT FALLBACK
-              // ======================================================
-
-              if (__builtin_expect(
-                      v12_qc_mode < 0,
-                      0
-                  ))
-              {
-                  acc =
-                      __verusclmulwithoutreduction64alignedrepeat_v2_1(
-                          rs64,
-                          string,
-                          keyMask,
-                          fixrand,
-                          fixrandex,
-                          g_prand,
-                          g_prandex
-                      );
-              }
-
-              // ======================================================
-              // ONE-TIME FAST-vs-EXACT VALIDATION
-              // ======================================================
-
-              else if (__builtin_expect(
-                           v12_qc_mode == 2,
-                           0
-                       ))
-              {
-                  v12_clear_qc();
-
-
-                  const __m128i fast_acc =
-                      __verusclmulwithoutreduction64alignedrepeat_v12_fast(
-                          rs64,
-                          string,
-                          keyMask,
-                          fixrand,
-                          fixrandex,
-                          g_prand,
-                          g_prandex
-                      );
-
-
-                  const uint32_t flags =
-                      v12_read_fpscr();
-
-
-                  // Restore the key before exact replay.
-                  v12_rollback_key(
-                      rs64,
-                      fixrand,
-                      fixrandex,
-                      g_prand,
-                      g_prandex
-                  );
-
-
-                  v12_clear_qc();
-
-
-                  const __m128i exact_acc =
-                      __verusclmulwithoutreduction64alignedrepeat_v2_1(
-                          rs64,
-                          string,
-                          keyMask,
-                          fixrand,
-                          fixrandex,
-                          g_prand,
-                          g_prandex
-                      );
-
-
-                  // Exact V11 itself can legitimately set QC while
-                  // correcting the result in software.
-                  v12_clear_qc();
-
-
-                  // If the validation hash itself saturated,
-                  // try validation again on the next hash.
-                  if (flags & V12_FPSCR_QC)
-                  {
-                      v12_qc_mode = 2;
-                  }
-                  else
-                  {
-                      if (
-                          memcmp(
-                              &fast_acc,
-                              &exact_acc,
-                              sizeof(__m128i)
-                          )
-                          == 0
-                      )
-                      {
-                          v12_qc_mode = 1;
-                      }
-                      else
-                      {
-                          // Any unexplained mismatch permanently
-                          // disables QCFAST.
-                          v12_qc_mode = -1;
-                      }
-                  }
-
-
-                  acc = exact_acc;
-              }
-
-              // ======================================================
-              // NORMAL QCFAST HOT PATH
-              // ======================================================
-
-              else
-              {
-                  acc =
-                      __verusclmulwithoutreduction64alignedrepeat_v12_fast(
-                          rs64,
-                          string,
-                          keyMask,
-                          fixrand,
-                          fixrandex,
-                          g_prand,
-                          g_prandex
-                      );
-
-
-                  const uint32_t flags =
-                      v12_read_fpscr();
-
-
-                  if (__builtin_expect(
-                          (flags & V12_FPSCR_QC) != 0,
-                          0
-                      ))
-                  {
-                      // The fast ARM instruction saturated.
-                      //
-                      // Restore every key mutation from this attempt,
-                      // then replay the exact V11 function.
-                      v12_rollback_key(
-                          rs64,
-                          fixrand,
-                          fixrandex,
-                          g_prand,
-                          g_prandex
-                      );
-
-
-                      v12_clear_qc();
-
-
-                      acc =
-                          __verusclmulwithoutreduction64alignedrepeat_v2_1(
-                              rs64,
-                              string,
-                              keyMask,
-                              fixrand,
-                              fixrandex,
-                              g_prand,
-                              g_prandex
-                          );
-
-
-                      // Exact function may set QC while correcting
-                      // saturation itself. Clear it before next hash.
-                      v12_clear_qc();
-                  }
-              }
-
-
-              // V11 constant-folded lazyLengthHash.
-              acc =
-                  _mm_xor_si128_emu(
-                      acc,
-                      _mm_cvtsi64_si128_emu(
-                          0x10000ULL
-                      )
-                  );
-
-
-              return
-                  precompReduction64_port(
-                      acc
-                  );
-          }'''
-
-
-          s = (
-              s[:wrapper_start]
-              + wrapper
-              + s[wrapper_close:]
-          )
-
-
-          path.write_text(
-              s
-          )
-
-
-          # ==========================================================
-          # API BUILD ID
-          # ==========================================================
-
-          api_path = Path(
-              'api.cpp'
-          )
-
-
-          api = api_path.read_text()
-
-
-          if (
-              'BUILD=A55-HOTCORE-V11'
-              not in api
-          ):
-
-              raise SystemExit(
-                  'V11 BUILD ID missing before V12 patch'
-              )
-
-
-          api = api.replace(
-              'BUILD=A55-HOTCORE-V11',
-              'BUILD=A55-QCFAST-V12',
-              1
-          )
-
-
-          api_path.write_text(
-              api
-          )
-
-
-          # ==========================================================
-          # FINAL SOURCE SANITY
-          # ==========================================================
-
-          final = path.read_text()
-
-
-          if fast_name not in final:
-
-              raise SystemExit(
-                  'V12 FAST function missing'
-              )
-
-
-          if (
-              final.count(
-                  'v12_mulhrs_fast('
-              )
-              < 14
-          ):
-
-              raise SystemExit(
-                  'V12 raw mulhrs helper/calls missing'
-              )
-
-
-          if (
-              'vmrs %0, fpscr'
-              not in final
-          ):
-
-              raise SystemExit(
-                  'V12 VMRS missing'
-              )
-
-
-          if (
-              'vmsr fpscr, %0'
-              not in final
-          ):
-
-              raise SystemExit(
-                  'V12 VMSR missing'
-              )
-
-
-          if (
-              'v12_rollback_key'
-              not in final
-          ):
-
-              raise SystemExit(
-                  'V12 rollback missing'
-              )
-
-
-          if (
-              'memcmp('
-              not in final
-          ):
-
-              raise SystemExit(
-                  'V12 runtime validation missing'
-              )
+                  raise SystemExit(
+                      'Missing V12 token: '
+                      + token
+                  )
 
 
           print(
@@ -887,61 +261,23 @@ jobs:
           )
 
           print(
-              'A55 QCFAST V12 PATCH: PASS'
+              'V12 SOURCE REPLAY: PASS'
           )
 
           print(
               '======================================'
-          )
-
-          print(
-              'Base V11 #33        : PRESERVED'
-          )
-
-          print(
-              'Exact mulhrs path   : PRESERVED'
-          )
-
-          print(
-              'FAST mulhrs sites   : 13'
-          )
-
-          print(
-              'Per-call correction : REMOVED FROM FAST'
-          )
-
-          print(
-              'FPSCR.QC check      : ONCE PER HASH'
-          )
-
-          print(
-              'QC saturation       : EXACT REPLAY'
-          )
-
-          print(
-              'Hardware QC probe   : YES'
-          )
-
-          print(
-              'FAST-vs-EXACT test  : YES'
-          )
-
-          print(
-              'Automatic fallback  : YES'
-          )
-
-          print(
-              'BUILD=A55-QCFAST-V12'
           )
 
           PY
 
 
       # ==============================================================
-      # SEMANTIC MODEL TEST
+      # CLEAN SEMANTIC TEST
+      #
+      # Completely replaces the broken run #34 test.
       # ==============================================================
 
-      - name: Verify QCFAST V12 model
+      - name: Verify QCFAST V12 semantics
         shell: bash
         run: |
           set -euo pipefail
@@ -950,70 +286,98 @@ jobs:
           import random
 
 
-          def signed16(x):
-              x &= 0xffff
+          def signed16(value):
 
-              return (
-                  x - 0x10000
-                  if x & 0x8000
-                  else x
-              )
+              value &= 0xffff
 
+
+              if value & 0x8000:
+
+                  return value - 0x10000
+
+
+              return value
+
+
+          # ==========================================================
+          # EXACT x86 PMULHRSW SEMANTICS
+          # ==========================================================
 
           def x86_mulhrs(a, b):
+
               product = a * b
 
-              value = (
-                  product + 0x4000
+
+              result = (
+                  product
+                  + 0x4000
               ) >> 15
 
+
               return signed16(
-                  value
+                  result
               )
 
 
-          def arm_vqrdmulh_model(a, b):
-              value = (
-                  (a * b) + 0x4000
+          # ==========================================================
+          # ARM VQRDMULH MODEL
+          # ==============================================================
+
+          def arm_vqrdmulh(a, b):
+
+              result = (
+                  a * b
+                  + 0x4000
               ) >> 15
+
 
               saturated = False
 
 
-              if value > 32767:
-                  value = 32767
+              if result > 32767:
+
+                  result = 32767
+
                   saturated = True
 
 
-              if value < -32768:
-                  value = -32768
+              elif result < -32768:
+
+                  result = -32768
+
                   saturated = True
 
 
-              return value, saturated
+              return (
+                  result,
+                  saturated
+              )
 
 
           # ==========================================================
-          # CRITICAL SPECIAL CASE
-          # ==========================================================
+          # THE KNOWN DIFFERENCE
+          #
+          # x86 wraps 0x8000 -> -32768
+          # ARM saturates -> +32767 and raises QC
+          # ==============================================================
 
-          x86 = x86_mulhrs(
+          exact = x86_mulhrs(
               -32768,
               -32768
           )
 
 
-          arm, saturated = arm_vqrdmulh_model(
+          fast, saturated = arm_vqrdmulh(
               -32768,
               -32768
           )
 
 
-          assert x86 == -32768
+          assert exact == -32768
 
-          assert arm == 32767
+          assert fast == 32767
 
-          assert saturated
+          assert saturated is True
 
 
           print(
@@ -1022,20 +386,24 @@ jobs:
 
 
           # ==========================================================
-          # RANDOM EQUIVALENCE
+          # RANDOM NON-SATURATION EQUIVALENCE
           #
-          # Whenever ARM does NOT saturate,
-          # raw VQRDMULH must equal exact x86 PMULHRSW.
-          # ==========================================================
+          # Whenever QC would remain clear,
+          # raw VQRDMULH must equal PMULHRSW.
+          # ==============================================================
 
           random.seed(
               0xA5512
           )
 
 
+          tested = 0
+
+
           for _ in range(
               2000000
           ):
+
               a = random.randint(
                   -32768,
                   32767
@@ -1054,31 +422,41 @@ jobs:
               )
 
 
-              fast, sat = arm_vqrdmulh_model(
+              fast, saturated = arm_vqrdmulh(
                   a,
                   b
               )
 
 
-              if not sat:
+              if not saturated:
 
                   assert fast == exact
 
+                  tested += 1
+
+
+          assert tested > 1900000
+
 
           print(
-              '2,000,000 non-saturation equivalence tests: PASS'
+              '2,000,000 mulhrs comparisons: PASS'
           )
 
 
           # ==========================================================
-          # ROLLBACK MODEL
-          # ==========================================================
+          # KEY ROLLBACK MODEL
+          #
+          # Matches the CLHash behaviour:
+          # before each mutation, original prand/prandex values are
+          # saved. Rollback walks 31 -> 0.
+          # ==============================================================
 
-          for _ in range(
-              5000
+          for trial in range(
+              10000
           ):
+
               original = [
-                  random.getrandbits(64)
+                  random.getrandbits(128)
                   for _ in range(512)
               ]
 
@@ -1088,13 +466,13 @@ jobs:
               )
 
 
-              fix = []
+              fixrand = []
 
-              fixex = []
+              fixrandex = []
 
-              old = []
+              old_prand = []
 
-              oldex = []
+              old_prandex = []
 
 
               for i in range(32):
@@ -1109,29 +487,43 @@ jobs:
                   )
 
 
-                  fix.append(a)
+                  # Save exactly what CLHash saw before mutation.
+                  fixrand.append(
+                      a
+                  )
 
-                  fixex.append(b)
+
+                  fixrandex.append(
+                      b
+                  )
 
 
-                  old.append(
+                  old_prand.append(
                       key[a]
                   )
 
 
-                  oldex.append(
+                  old_prandex.append(
                       key[b]
                   )
 
 
-                  key[a] ^=
-                      random.getrandbits(64)
+                  # Simulate arbitrary mutations.
+                  key[a] = (
+                      key[a]
+                      ^
+                      random.getrandbits(128)
+                  )
 
 
-                  key[b] ^=
-                      random.getrandbits(64)
+                  key[b] = (
+                      key[b]
+                      ^
+                      random.getrandbits(128)
+                  )
 
 
+              # Same reverse order used by FixKey / V12 rollback.
               for i in range(
                   31,
                   -1,
@@ -1139,20 +531,124 @@ jobs:
               ):
 
                   key[
-                      fixex[i]
-                  ] = oldex[i]
+                      fixrandex[i]
+                  ] = old_prandex[i]
 
 
                   key[
-                      fix[i]
-                  ] = old[i]
+                      fixrand[i]
+                  ] = old_prand[i]
 
 
               assert key == original
 
 
           print(
-              '5,000 reverse rollback tests: PASS'
+              '10,000 reverse rollback simulations: PASS'
+          )
+
+
+          # ==========================================================
+          # QC POLICY MODEL
+          # ==============================================================
+
+          def qcfast_result(
+              pairs
+          ):
+
+              qc = False
+
+              fast_results = []
+
+
+              for a, b in pairs:
+
+                  result, saturated = arm_vqrdmulh(
+                      a,
+                      b
+                  )
+
+
+                  fast_results.append(
+                      result
+                  )
+
+
+                  if saturated:
+
+                      qc = True
+
+
+              if qc:
+
+                  # V12 discards/replays exact path.
+                  return [
+                      x86_mulhrs(
+                          a,
+                          b
+                      )
+                      for a, b in pairs
+                  ]
+
+
+              return fast_results
+
+
+          for _ in range(
+              100000
+          ):
+
+              pairs = [
+                  (
+                      random.randint(
+                          -32768,
+                          32767
+                      ),
+                      random.randint(
+                          -32768,
+                          32767
+                      )
+                  )
+                  for _ in range(32)
+              ]
+
+
+              # Force saturation occasionally.
+              if (
+                  random.randrange(
+                      100
+                  )
+                  == 0
+              ):
+
+                  pairs[
+                      random.randrange(32)
+                  ] = (
+                      -32768,
+                      -32768
+                  )
+
+
+              reference = [
+                  x86_mulhrs(
+                      a,
+                      b
+                  )
+                  for a, b in pairs
+              ]
+
+
+              assert (
+                  qcfast_result(
+                      pairs
+                  )
+                  ==
+                  reference
+              )
+
+
+          print(
+              '100,000 QCFAST fallback simulations: PASS'
           )
 
 
@@ -1161,7 +657,7 @@ jobs:
           )
 
           print(
-              'QCFAST V12 MODEL: PASS'
+              'QCFAST V12 SEMANTICS: PASS'
           )
 
           print(
@@ -1172,7 +668,7 @@ jobs:
 
 
       # ==============================================================
-      # SOURCE VERIFICATION
+      # SOURCE PREFLIGHT
       # ==============================================================
 
       - name: Verify V12 source
@@ -1190,31 +686,31 @@ jobs:
             api.cpp
 
 
-          echo "===== RAW VQRDMULH FAST ====="
+          echo "===== FAST MULHRS ====="
 
           grep -n \
             "v12_mulhrs_fast" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== FPSCR QC ====="
-
-          grep -n \
-            "V12_FPSCR_QC" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== VMRS ====="
+          echo "===== FPSCR READ ====="
 
           grep -n \
             "vmrs %0, fpscr" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== VMSR ====="
+          echo "===== FPSCR WRITE ====="
 
           grep -n \
             "vmsr fpscr, %0" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== QC PROBE ====="
+
+          grep -n \
+            "v12_probe_qc" \
             verus/armv7/verus_clhash_portable.cpp
 
 
@@ -1225,19 +721,19 @@ jobs:
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== FAST FUNCTION ====="
-
-          grep -n \
-            "v12_fast" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== EXACT V11 STILL PRESENT ====="
+          echo "===== EXACT V11 MULHRS STILL PRESENT ====="
 
           grep -n \
             "_mm_mulhrs_epi16_emu" \
             verus/armv7/verus_clhash_portable.cpp |
-            head -n 25
+            head -n 30
+
+
+          echo "===== FAST FUNCTION ====="
+
+          grep -n \
+            "__verusclmulwithoutreduction64alignedrepeat_v12_fast" \
+            verus/armv7/verus_clhash_portable.cpp
 
 
       # ==============================================================
@@ -1261,6 +757,7 @@ jobs:
           set -euo pipefail
 
           cd src
+
 
           docker build \
             -t ccminer-firestick-a55-v12 \
@@ -1302,7 +799,7 @@ jobs:
 
           echo "===== BUILD LOG ====="
 
-          tail -n 450 \
+          tail -n 500 \
             build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
 
 
@@ -1339,7 +836,7 @@ jobs:
               "A55-QCFAST-V12"
 
 
-          echo "===== BINARY SIZE ====="
+          echo "===== SIZE ====="
 
           ls -lh \
             "$BIN"
@@ -1414,11 +911,11 @@ jobs:
           Stable base:
           exact A55-HOTCORE-V11 #33
 
-          V11 builder commit:
+          V11 builder:
           c98f006a974ccee5be50ea5982311c05774432bc
 
-          V11 measured:
-          approximately 1.24 MH/s early sustained test
+          V12 proven source patch:
+          50ac3037b54d6f045e534af8b04a2ddf571ae844
 
           ccminer source:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
@@ -1426,10 +923,16 @@ jobs:
           ABI:
           armeabi-v7a / AArch32
 
-          CPU:
+          Target CPU:
           Cortex-A55
 
-          V3 SIGBUS fixes:
+          V11 baseline:
+          approximately 1.24 MH/s
+
+          V10 FASTMOD:
+          preserved
+
+          V11 HOTCORE:
           preserved
 
           Hardware AES:
@@ -1438,38 +941,29 @@ jobs:
           Hardware PMULL:
           preserved
 
-          V10 FASTMOD:
-          preserved
-
-          V11 HOTCORE:
-          preserved
-
           ThinLTO:
           preserved
 
-          V12 FAST mulhrs:
+          V12 fast mulhrs:
           raw VQRDMULH
 
-          V12 normal-path per-call saturation correction:
+          Normal-path per-call overflow correction:
           removed
 
-          FPSCR QC:
-          checked once after FAST CLHash
+          FPSCR.QC:
+          checked once per CLHash
+
+          QC saturation:
+          reverse rollback then exact V11 replay
 
           Hardware QC probe:
           enabled
 
-          First clean hash FAST-vs-EXACT validation:
+          One-time fast/exact validation:
           enabled
 
-          Saturation:
-          automatic rollback + exact V11 replay
-
-          Unexpected mismatch:
-          permanent exact V11 fallback
-
-          Exact V11 function:
-          retained in binary
+          Permanent exact fallback:
+          enabled
 
           API:
           BUILD=A55-QCFAST-V12
