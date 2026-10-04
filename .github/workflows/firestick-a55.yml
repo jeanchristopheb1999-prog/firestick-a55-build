@@ -11,9 +11,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       # ==============================================================
-      # EXACT HISTORICAL BASES
+      # EXACT KNOWN-GOOD BASES
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -23,7 +22,6 @@ jobs:
           ref: 6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0
           path: v8-base
 
-
       - name: Checkout exact V10 workflow
         uses: actions/checkout@v4
         with:
@@ -31,14 +29,12 @@ jobs:
           ref: 73446a48e954bcc579c302d5a01e3dfb71b2bd30
           path: v10-base
 
-
-      - name: Checkout V11 run 30 source workflow
+      - name: Checkout V11 run 30 workflow
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
           ref: 7f92ff0f8788f54781704ce8414915584450bd78
           path: v11-base
-
 
       - name: Checkout pinned ccminer source
         uses: actions/checkout@v4
@@ -49,7 +45,7 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY V10 + V11, FIXING ONLY THE FAILED STORE DETECTOR
+      # REPLAY EXACT V10 + CORRECTED V11
       # ==============================================================
 
       - name: Apply corrected HOTCORE V11
@@ -117,14 +113,13 @@ jobs:
           if len(blocks) < 3:
 
               raise SystemExit(
-                  'Expected 3 V11 Python blocks, found '
+                  'Expected at least 3 V11 Python blocks, found '
                   + str(len(blocks))
               )
 
 
           # ==========================================================
-          # BLOCK 1:
-          # exact V10 replay from successful V11 #30
+          # BLOCK 1 = exact V10 reconstruction
           # ==========================================================
 
           print(
@@ -143,7 +138,7 @@ jobs:
           exec(
               compile(
                   blocks[0],
-                  'v11-replay-v10.py',
+                  'v10-replay.py',
                   'exec'
               ),
               {
@@ -153,12 +148,14 @@ jobs:
 
 
           # ==========================================================
-          # BLOCK 2:
-          # V11 patch from run #30
+          # BLOCK 2 = V11 patch from run #30
           #
-          # Run #30 reached only the duplicate-store detector.
-          # Replace that fragile regex section with robust
-          # last-occurrence removal.
+          # Run #30 only failed because we incorrectly assumed
+          # there were duplicate fixrand/fixrandex stores.
+          #
+          # Actual V10 active core already has exactly ONE pair.
+          #
+          # Remove that attempted optimization entirely.
           # ==========================================================
 
           patch = blocks[1]
@@ -177,111 +174,52 @@ jobs:
           )
 
 
-          robust_fix = r'''# ==========================================================
-          # REMOVE DUPLICATE FIXRAND STORES
+          corrected_section = r'''# ==========================================================
+          # FIXRAND/FIXRANDEX
           #
-          # The active CLHash function contains two writes of each
-          # index per iteration:
+          # Verified on the real V10 source:
           #
-          #     fixrand[i] = prand_idx;
-          #     fixrandex[i] = prandex_idx;
+          # The active v2.1 function already contains exactly
+          # one required fixrand assignment and one required
+          # fixrandex assignment.
           #
-          # The first pair occurs before the switch and is required.
-          # The second pair occurs after the switch and is redundant.
-          #
-          # Remove the LAST physical line containing each assignment.
-          # This deliberately ignores whitespace/indentation.
+          # Do NOT remove them.
           # ==========================================================
 
-          def remove_last_assignment(
-              source,
-              token
+          if (
+              active.count(
+                  'fixrand[i] = prand_idx;'
+              )
+              != 1
           ):
-              positions = []
-
-              pos = 0
-
-              while True:
-
-                  found = source.find(
-                      token,
-                      pos
+              raise SystemExit(
+                  'Unexpected active fixrand count before final sanity: '
+                  + str(
+                      active.count(
+                          'fixrand[i] = prand_idx;'
+                      )
                   )
-
-
-                  if found < 0:
-                      break
-
-
-                  positions.append(
-                      found
-                  )
-
-
-                  pos = (
-                      found +
-                      len(token)
-                  )
-
-
-              if len(positions) != 2:
-
-                  raise SystemExit(
-                      'Expected exactly 2 occurrences of '
-                      + token
-                      + ', found '
-                      + str(len(positions))
-                  )
-
-
-              target = positions[-1]
-
-
-              line_start = source.rfind(
-                  '\n',
-                  0,
-                  target
               )
 
 
-              if line_start < 0:
-                  line_start = 0
-              else:
-                  line_start += 1
-
-
-              line_end = source.find(
-                  '\n',
-                  target
+          if (
+              active.count(
+                  'fixrandex[i] = prandex_idx;'
               )
-
-
-              if line_end < 0:
-                  line_end = len(source)
-              else:
-                  line_end += 1
-
-
-              return (
-                  source[:line_start] +
-                  source[line_end:]
+              != 1
+          ):
+              raise SystemExit(
+                  'Unexpected active fixrandex count before final sanity: '
+                  + str(
+                      active.count(
+                          'fixrandex[i] = prandex_idx;'
+                      )
+                  )
               )
-
-
-          active = remove_last_assignment(
-              active,
-              'fixrand[i] = prand_idx;'
-          )
-
-
-          active = remove_last_assignment(
-              active,
-              'fixrandex[i] = prandex_idx;'
-          )
 
 
           print(
-              'Duplicate fixrand/fixrandex stores removed'
+              'fixrand/fixrandex already optimal: 1 store each'
           )
 
 
@@ -290,7 +228,7 @@ jobs:
 
           patch = (
               patch[:section_start] +
-              robust_fix +
+              corrected_section +
               patch[section_end:]
           )
 
@@ -300,7 +238,7 @@ jobs:
           )
 
           print(
-              'APPLY V11 HOTCORE PATCH'
+              'APPLY CORRECTED V11 HOTCORE'
           )
 
           print(
@@ -311,7 +249,7 @@ jobs:
           exec(
               compile(
                   patch,
-                  'v11-hotcore-fixed.py',
+                  'v11-hotcore-corrected.py',
                   'exec'
               ),
               {
@@ -321,8 +259,7 @@ jobs:
 
 
           # ==========================================================
-          # BLOCK 3:
-          # exact V11 semantic tests from run #30
+          # BLOCK 3 = semantic tests from V11
           # ==========================================================
 
           print(
@@ -351,12 +288,15 @@ jobs:
 
 
           # ==========================================================
-          # FINAL SOURCE CHECKS
+          # FINAL SOURCE VALIDATION
           # ==========================================================
 
-          clhash = Path(
+          clhash_path = Path(
               'verus/armv7/verus_clhash_portable.cpp'
-          ).read_text()
+          )
+
+
+          clhash = clhash_path.read_text()
 
 
           api = Path(
@@ -379,58 +319,40 @@ jobs:
               )
 
 
-          if (
-              clhash.count(
-                  'fixrand[i] = prand_idx;'
-              )
-              < 1
-          ):
-
-              raise SystemExit(
-                  'Required fixrand store disappeared'
-              )
-
-
-          active_start = clhash.index(
+          func_start = clhash.index(
               '__verusclmulwithoutreduction64alignedrepeat_v2_1'
           )
 
 
-          active_end = clhash.index(
+          func_end = clhash.index(
               '// verus intermediate hash extra - v2.2',
-              active_start
+              func_start
           )
 
 
           active = clhash[
-              active_start:
-              active_end
+              func_start:
+              func_end
           ]
 
 
+          # ----------------------------------------------------------
+          # Exact V10 FASTMOD still present
+          # ----------------------------------------------------------
+
           if (
-              active.count(
-                  'fixrand[i] = prand_idx;'
-              )
-              != 1
+              'v10_umod64_ctx'
+              not in clhash
           ):
 
               raise SystemExit(
-                  'Active fixrand write count is not 1'
+                  'FASTMOD V10 core missing'
               )
 
 
-          if (
-              active.count(
-                  'fixrandex[i] = prandex_idx;'
-              )
-              != 1
-          ):
-
-              raise SystemExit(
-                  'Active fixrandex write count is not 1'
-              )
-
+          # ----------------------------------------------------------
+          # V11 hoisted modulo context
+          # ----------------------------------------------------------
 
           if (
               'v11_smod64_ctx'
@@ -442,6 +364,10 @@ jobs:
               )
 
 
+          # ----------------------------------------------------------
+          # Selector optimization
+          # ----------------------------------------------------------
+
           if (
               'selector_words'
               not in active
@@ -451,6 +377,22 @@ jobs:
                   'V11 32-bit selector missing'
               )
 
+
+          if (
+              'sel_lo'
+              not in active or
+              'sel_hi'
+              not in active
+          ):
+
+              raise SystemExit(
+                  'V11 selector lanes missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # Cached case 0x14 / 0x18 buffers
+          # ----------------------------------------------------------
 
           if (
               'pbuf_v'
@@ -464,13 +406,71 @@ jobs:
               )
 
 
+          # ----------------------------------------------------------
+          # Direct low32 modulo XOR
+          # ----------------------------------------------------------
+
+          if (
+              'v11_xor_low32'
+              not in active
+          ):
+
+              raise SystemExit(
+                  'V11 low32 XOR missing'
+              )
+
+
+          # ----------------------------------------------------------
+          # Required key restore bookkeeping
+          # ----------------------------------------------------------
+
+          fix_count = active.count(
+              'fixrand[i] = prand_idx;'
+          )
+
+
+          fixex_count = active.count(
+              'fixrandex[i] = prandex_idx;'
+          )
+
+
+          print(
+              'Active fixrand count:',
+              fix_count
+          )
+
+
+          print(
+              'Active fixrandex count:',
+              fixex_count
+          )
+
+
+          if fix_count != 1:
+
+              raise SystemExit(
+                  'Active fixrand count must equal 1'
+              )
+
+
+          if fixex_count != 1:
+
+              raise SystemExit(
+                  'Active fixrandex count must equal 1'
+              )
+
+
+          # ----------------------------------------------------------
+          # Constant CLMUL optimization
+          # ----------------------------------------------------------
+
           if (
               'lazyLengthHash_port(1024, 64)'
               in clhash
           ):
 
               raise SystemExit(
-                  'Constant PMULL still present'
+                  'Constant lazyLengthHash PMULL survived'
               )
 
 
@@ -480,9 +480,13 @@ jobs:
           ):
 
               raise SystemExit(
-                  'Constant lazy hash missing'
+                  'Constant lazyLengthHash replacement missing'
               )
 
+
+          # ----------------------------------------------------------
+          # ThinLTO
+          # ----------------------------------------------------------
 
           if (
               '-flto=thin'
@@ -490,7 +494,7 @@ jobs:
           ):
 
               raise SystemExit(
-                  'ThinLTO flag missing'
+                  'ThinLTO missing'
               )
 
 
@@ -499,7 +503,7 @@ jobs:
           )
 
           print(
-              'V11 SOURCE VALIDATION: PASS'
+              'HOTCORE V11 SOURCE VALIDATION: PASS'
           )
 
           print(
@@ -510,10 +514,10 @@ jobs:
 
 
       # ==============================================================
-      # SHOW IMPORTANT PATCHES
+      # SHOW PATCHES
       # ==============================================================
 
-      - name: Verify V11 source
+      - name: Verify HOTCORE V11 source
         shell: bash
         run: |
           set -euo pipefail
@@ -528,28 +532,28 @@ jobs:
             api.cpp
 
 
-          echo "===== FASTMOD V10 ====="
+          echo "===== V10 FASTMOD ====="
 
           grep -n \
             "v10_umod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== V11 FASTMOD CTX ====="
+          echo "===== V11 FASTMOD CONTEXT ====="
 
           grep -n \
             "v11_smod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== V11 SELECTOR ====="
+          echo "===== 32-BIT SELECTOR ====="
 
           grep -n \
             "selector_words" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== BUFFER CACHE ====="
+          echo "===== CACHED BUFFERS ====="
 
           grep -n \
             "pbuf_v" \
@@ -561,7 +565,7 @@ jobs:
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== LOW32 XOR ====="
+          echo "===== DIRECT LOW32 XOR ====="
 
           grep -n \
             "v11_xor_low32" \
@@ -575,7 +579,7 @@ jobs:
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== CONSTANT PMULL REMOVAL ====="
+          echo "===== CONSTANT CLMUL ====="
 
           grep -n \
             "0x10000ULL" \
@@ -688,17 +692,7 @@ jobs:
               "A55-HOTCORE-V11"
 
 
-          echo "===== DIVISION HELPER ====="
-
-          readelf \
-            -Ws \
-            "$BIN" |
-            grep \
-              "__aeabi_ldivmod" ||
-            true
-
-
-          echo "===== UDIV ====="
+          echo "===== HARDWARE UDIV ====="
 
           if command -v llvm-objdump >/dev/null 2>&1
           then
@@ -711,6 +705,16 @@ jobs:
                 true
 
           fi
+
+
+          echo "===== REMAINING __aeabi_ldivmod ====="
+
+          readelf \
+            -Ws \
+            "$BIN" |
+            grep \
+              "__aeabi_ldivmod" ||
+            true
 
 
           echo "===== SIZE ====="
@@ -775,19 +779,16 @@ jobs:
           Build:
           A55-HOTCORE-V11
 
-          Stable base:
-          A55-FASTMOD-V10
-
-          V10 measured baseline:
-          approximately 1.16 MH/s sustained
+          Base:
+          exact A55-FASTMOD-V10
 
           V10 workflow commit:
           73446a48e954bcc579c302d5a01e3dfb71b2bd30
 
-          V11 run-30 workflow:
+          V11 development base:
           7f92ff0f8788f54781704ce8414915584450bd78
 
-          ccminer source:
+          ccminer:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI:
@@ -795,6 +796,9 @@ jobs:
 
           CPU:
           Cortex-A55
+
+          V10 sustained baseline:
+          approximately 1.16 MH/s
 
           FASTMOD V10:
           preserved
@@ -808,35 +812,35 @@ jobs:
           VQRDMULH:
           preserved
 
+          NEON VTBL:
+          preserved
+
           Partial Haraka:
           preserved
 
-          Full candidate replay:
+          Candidate full replay:
           preserved
 
           Runtime Haraka validation:
           preserved
 
           V11 selector:
-          split into 32-bit NEON lanes
+          32-bit NEON lanes
 
-          V11 outer loop:
-          32-bit
-
-          V11 rounds:
+          V11 loop counters:
           32-bit
 
           V11 pbuf neighbour:
           precomputed
 
           V11 case 0x14:
-          pbuf and buftmp vectors cached
+          pbuf vectors cached
 
           V11 case 0x14:
           control bits cached
 
           V11 case 0x18:
-          pbuf and buftmp vectors cached
+          pbuf vectors cached
 
           V11 case 0x18:
           control bits cached
@@ -845,18 +849,15 @@ jobs:
           FASTMOD context hoisted outside rounds loop
 
           V11 modulo XOR:
-          direct low32 NEON lane
+          direct low32 lane
 
-          Duplicate fixrand stores:
-          removed
-
-          Duplicate fixrandex stores:
-          removed
+          fixrand/fixrandex:
+          original single required store preserved
 
           lazyLengthHash(1024,64):
           constant 0x10000
 
-          Constant per-hash PMULL:
+          Per-hash constant PMULL:
           removed
 
           ThinLTO:
@@ -865,6 +866,12 @@ jobs:
           API:
           BUILD=A55-HOTCORE-V11
           EOF
+
+
+          echo "===== PACKAGE ====="
+
+          ls -lh \
+            dist/
 
 
           echo "===== SHA256 ====="
