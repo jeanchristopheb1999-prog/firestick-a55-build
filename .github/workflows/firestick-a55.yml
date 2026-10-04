@@ -123,7 +123,7 @@ jobs:
 
           start = s.index(
               'void aesenc(unsigned char *s, const unsigned char *rk)'
-          )
+          ) + 1
 
           end = s.index(
               '\n// Simulate _mm_unpacklo_epi32',
