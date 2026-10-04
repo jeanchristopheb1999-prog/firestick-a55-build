@@ -12,10 +12,7 @@ jobs:
 
     steps:
       # ==============================================================
-      # EXACT V8 CHAMPION WORKFLOW
-      #
-      # We deliberately rebuild from the exact historical V8 workflow,
-      # not from V9.
+      # GET EXACT HISTORICAL V8 WORKFLOW
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -27,7 +24,7 @@ jobs:
 
 
       # ==============================================================
-      # PINNED CCMINER SOURCE
+      # GET PINNED CCMINER SOURCE
       # ==============================================================
 
       - name: Checkout pinned ccminer ARM source
@@ -39,7 +36,7 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY EXACT V8 PATCH
+      # REPLAY THE EXACT V8 CHAMPION PATCH
       # ==============================================================
 
       - name: Rebuild exact V8 champion base
@@ -72,7 +69,7 @@ jobs:
 
           if start is None:
               raise SystemExit(
-                  'Could not find V8 Python patch'
+                  'Could not find historical V8 Python patch'
               )
 
 
@@ -86,7 +83,7 @@ jobs:
 
           if end is None:
               raise SystemExit(
-                  'Could not find end of V8 Python patch'
+                  'Could not find end of historical V8 patch'
               )
 
 
@@ -102,11 +99,10 @@ jobs:
           )
 
           print(
-              'REPLAYING EXACT V8 PATCH'
+              'REPLAY EXACT V8 CHAMPION'
           )
 
           print(
-              'commit: '
               '6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0'
           )
 
@@ -128,13 +124,13 @@ jobs:
 
 
           print(
-              'Exact V8 patch replayed successfully'
+              'V8 champion patch replay: PASS'
           )
           PY
 
 
       # ==============================================================
-      # V10 FAST 64/32 MODULO
+      # FASTMOD V10
       # ==============================================================
 
       - name: Patch FASTMOD V10
@@ -156,34 +152,32 @@ jobs:
 
 
           # ==========================================================
-          # V10 EXACT SIGNED 64 / SIGNED 32 REMAINDER
+          # EXACT AARCH32 64/32 REMAINDER
           #
-          # Problem:
+          # Replaces:
           #
-          #     int64_t dividend % int32_t divisor
+          #     int64_t % int32_t
           #
-          # on AArch32 calls __aeabi_ldivmod because there is no
-          # native 64-bit divide instruction.
+          # which normally pulls in __aeabi_ldivmod on ARM32.
           #
-          # Cortex-A55 DOES have fast 32-bit UDIV.
+          # The A55 has native 32-bit UDIV.
           #
-          # V10:
-          # - converts to unsigned magnitude
-          # - performs exact 64/32 remainder
-          # - uses 32-bit UDIV only
-          # - restores C signed remainder semantics
+          # We perform:
           #
-          # No floating point.
+          #     unsigned 64 / unsigned 32 remainder
+          #
+          # using native 32-bit UDIV, then restore the signed
+          # C/C++ remainder sign.
+          #
+          # No float.
           # No reciprocal approximation.
-          # Bit-exact integer result.
+          # Exact integer result.
           # ==========================================================
-
 
           helper = r'''
 
           // ==========================================================
           // A55 FASTMOD V10
-          // Exact signed int64 % signed int32 using 32-bit UDIV.
           // ==========================================================
 
           typedef struct
@@ -248,20 +242,21 @@ jobs:
               v10_div32_ctx ctx;
 
 
-              // Absolute value using unsigned arithmetic.
-              // Works for INT32_MIN too.
               const uint32_t raw =
                   (uint32_t)divisor;
 
 
               ctx.d =
                   divisor < 0
-                      ? (uint32_t)(0u - raw)
+                      ? (uint32_t)(
+                            0u - raw
+                        )
                       : raw;
 
 
               ctx.shift =
-                  (uint32_t)__builtin_clz(
+                  (uint32_t)
+                  __builtin_clz(
                       ctx.d
                   );
 
@@ -296,7 +291,6 @@ jobs:
                   ctx->d;
 
 
-              // d == 1 => remainder always zero.
               if (__builtin_expect(
                       d == 1u,
                       0
@@ -317,9 +311,7 @@ jobs:
                   (uint32_t)numerator;
 
 
-              // First reduce the high 32 bits.
-              //
-              // This is one hardware 32-bit UDIV at most.
+              // Reduce high half first.
               if (u1 >= d)
               {
                   u1 =
@@ -330,7 +322,7 @@ jobs:
               }
 
 
-              // Entire value now fits in 32 bits.
+              // Fast path when remaining value is 32-bit.
               if (__builtin_expect(
                       u1 == 0u,
                       0
@@ -345,14 +337,7 @@ jobs:
 
 
               // ------------------------------------------------------
-              // Normalized 64/32 division using base 2^16.
-              //
-              // Precondition:
-              //     u1 < d
-              //
-              // Two 16-bit quotient digits.
-              //
-              // All actual division operations below are 32-bit UDIV.
+              // Exact normalized 64/32 division in base 2^16.
               // ------------------------------------------------------
 
               const uint32_t shift =
@@ -369,7 +354,10 @@ jobs:
                       (u1 << shift) |
                       (
                           u0 >>
-                          (32u - shift)
+                          (
+                              32u -
+                              shift
+                          )
                       );
 
 
@@ -381,6 +369,7 @@ jobs:
               {
                   un32 =
                       u1;
+
 
                   un10 =
                       u0;
@@ -410,7 +399,7 @@ jobs:
 
 
               // ------------------------------------------------------
-              // First quotient digit
+              // Quotient digit #1
               // ------------------------------------------------------
 
               uint32_t q1 =
@@ -428,8 +417,10 @@ jobs:
               while (
                   q1 >= 0x10000u ||
                   q1 * vn0 >
-                      (rhat << 16) +
-                      un1
+                      (
+                          (rhat << 16) +
+                          un1
+                      )
               )
               {
                   --q1;
@@ -456,7 +447,7 @@ jobs:
 
 
               // ------------------------------------------------------
-              // Second quotient digit
+              // Quotient digit #2
               // ------------------------------------------------------
 
               uint32_t q0 =
@@ -474,8 +465,10 @@ jobs:
               while (
                   q0 >= 0x10000u ||
                   q0 * vn0 >
-                      (rhat << 16) +
-                      un0
+                      (
+                          (rhat << 16) +
+                          un0
+                      )
               )
               {
                   --q0;
@@ -509,48 +502,6 @@ jobs:
 
           static inline
           __attribute__((always_inline))
-          int32_t v10_smod64_ctx(
-              int64_t dividend,
-              const v10_div32_ctx *ctx
-          )
-          {
-              const uint64_t raw =
-                  (uint64_t)dividend;
-
-
-              const int negative =
-                  dividend < 0;
-
-
-              // Absolute value of INT64_MIN is handled safely
-              // using unsigned two's complement arithmetic.
-              const uint64_t magnitude =
-                  negative
-                      ? (~raw + 1ULL)
-                      : raw;
-
-
-              const uint32_t remainder =
-                  v10_umod64_ctx(
-                      magnitude,
-                      ctx
-                  );
-
-
-              const int32_t signed_remainder =
-                  (int32_t)remainder;
-
-
-              // C/C++ remainder sign follows dividend.
-              return
-                  negative
-                      ? -signed_remainder
-                      : signed_remainder;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
           int32_t v10_smod64(
               int64_t dividend,
               int32_t divisor
@@ -562,44 +513,38 @@ jobs:
                   );
 
 
-              return
-                  v10_smod64_ctx(
-                      dividend,
+              const uint64_t raw =
+                  (uint64_t)dividend;
+
+
+              const int negative =
+                  dividend < 0;
+
+
+              // Unsigned two's complement magnitude.
+              // Handles INT64_MIN correctly.
+              const uint64_t magnitude =
+                  negative
+                      ? (~raw + 1ULL)
+                      : raw;
+
+
+              const uint32_t remainder =
+                  v10_umod64_ctx(
+                      magnitude,
                       &ctx
                   );
-          }
 
 
-          // Directly XOR the signed modulo result into
-          // the low 32-bit lane.
-          static inline
-          __attribute__((always_inline))
-          __m128i v10_xor_low32(
-              __m128i acc,
-              uint32_t value
-          )
-          {
-              uint32x4_t v =
-                  vreinterpretq_u32_s32(
-                      acc
-                  );
+              const int32_t signed_remainder =
+                  (int32_t)remainder;
 
 
-              v =
-                  vsetq_lane_u32(
-                      vgetq_lane_u32(
-                          v,
-                          0
-                      ) ^ value,
-                      v,
-                      0
-                  );
-
-
+              // C remainder follows dividend sign.
               return
-                  vreinterpretq_s32_u32(
-                      v
-                  );
+                  negative
+                      ? -signed_remainder
+                      : signed_remainder;
           }
 
 
@@ -610,6 +555,12 @@ jobs:
               '__m128i '
               '__verusclmulwithoutreduction64alignedrepeat_v2_1'
           )
+
+
+          if marker not in s:
+              raise SystemExit(
+                  'V2.1 CLHash function marker not found'
+              )
 
 
           insert_at = s.index(
@@ -625,275 +576,80 @@ jobs:
 
 
           # ==========================================================
-          # PATCH ACTIVE V2.1
-          # ==========================================================
-
-          func_start = s.index(
-              marker
-          )
-
-
-          func_end = s.index(
-              '// verus intermediate hash extra - v2.2',
-              func_start
-          )
-
-
-          active = s[
-              func_start:
-              func_end
-          ]
-
-
-          # ==========================================================
-          # CASE 0x0C
+          # ROBUST MODULO REPLACEMENT
           #
-          # This was the first 64-bit modulo site.
-          # ==========================================================
-
-          case0c_start = active.index(
-              'case 0xc:'
-          )
-
-
-          case10_start = active.index(
-              'case 0x10:',
-              case0c_start
-          )
-
-
-          case0c = active[
-              case0c_start:
-              case10_start
-          ]
-
-
-          old_case0c = '''                // cannot be zero here
-                const int32_t divisor = (uint32_t)selector;
-
-                acc = _mm_xor_si128_emu(add1, acc);
-
-                const int64_t dividend = _mm_cvtsi128_si64_emu(acc);
-                const __m128i modulo = _mm_cvtsi32_si128_emu(dividend % divisor);
-                acc = _mm_xor_si128_emu(modulo, acc);
-          '''
-
-
-          new_case0c = '''                // cannot be zero here
-                const int32_t divisor = (uint32_t)selector;
-
-                const v10_div32_ctx divctx =
-                    v10_make_div32_ctx(
-                        divisor
-                    );
-
-                acc = _mm_xor_si128_emu(add1, acc);
-
-                const int64_t dividend =
-                    _mm_cvtsi128_si64_emu(
-                        acc
-                    );
-
-                const int32_t remainder =
-                    v10_smod64_ctx(
-                        dividend,
-                        &divctx
-                    );
-
-                acc =
-                    v10_xor_low32(
-                        acc,
-                        (uint32_t)remainder
-                    );
-          '''
-
-
-          if old_case0c not in case0c:
-              raise SystemExit(
-                  'V10 case 0x0c signature not found'
-              )
-
-
-          case0c = case0c.replace(
-              old_case0c,
-              new_case0c,
-              1
-          )
-
-
-          active = (
-              active[:case0c_start] +
-              case0c +
-              active[case10_start:]
-          )
-
-
-          # ==========================================================
-          # CASE 0x18
+          # No whitespace-sensitive block matching.
           #
-          # This was the second active 64-bit modulo site.
+          # There are exactly four occurrences in the pinned source:
           #
-          # Divisor normalization is hoisted outside the random
-          # 1..8 round loop.
-          # ==========================================================
-
-          case18_start = active.index(
-              'case 0x18:'
-          )
-
-
-          case1c_start = active.index(
-              'case 0x1c:',
-              case18_start
-          )
-
-
-          case18 = active[
-              case18_start:
-              case1c_start
-          ]
-
-
-          old_decl = '''                __m128i *rc = prand;
-                __m128i onekey;
-
-                do
-          '''
-
-
-          new_decl = '''                __m128i *rc = prand;
-                __m128i onekey;
-
-                const int32_t divisor =
-                    (int32_t)(uint32_t)selector;
-
-                const v10_div32_ctx divctx =
-                    v10_make_div32_ctx(
-                        divisor
-                    );
-
-                do
-          '''
-
-
-          if old_decl not in case18:
-              raise SystemExit(
-                  'V10 case 0x18 declaration not found'
-              )
-
-
-          case18 = case18.replace(
-              old_decl,
-              new_decl,
-              1
-          )
-
-
-          old_mod = '''                        // cannot be zero here, may be negative
-                        const int32_t divisor = (uint32_t)selector;
-                        const int64_t dividend = _mm_cvtsi128_si64_emu(onekey);
-                        const __m128i modulo = _mm_cvtsi32_si128_emu(dividend % divisor);
-                        acc = _mm_xor_si128_emu(modulo, acc);
-          '''
-
-
-          new_mod = '''                        // cannot be zero here, may be negative
-                        const int64_t dividend =
-                            _mm_cvtsi128_si64_emu(
-                                onekey
-                            );
-
-                        const int32_t remainder =
-                            v10_smod64_ctx(
-                                dividend,
-                                &divctx
-                            );
-
-                        acc =
-                            v10_xor_low32(
-                                acc,
-                                (uint32_t)remainder
-                            );
-          '''
-
-
-          if old_mod not in case18:
-              raise SystemExit(
-                  'V10 case 0x18 modulo signature not found'
-              )
-
-
-          case18 = case18.replace(
-              old_mod,
-              new_mod,
-              1
-          )
-
-
-          active = (
-              active[:case18_start] +
-              case18 +
-              active[case1c_start:]
-          )
-
-
-          s = (
-              s[:func_start] +
-              active +
-              s[func_end:]
-          )
-
-
-          # ==========================================================
-          # OLD COMPATIBILITY FUNCTION
+          # v2.1:
+          #   case 0x0c
+          #   case 0x18
           #
-          # Not used by our v2.2 mining path, but eliminate its
-          # 64-bit modulo too so the source has no remaining
-          # "dividend % divisor".
+          # compatibility implementation:
+          #   case 0x0c
+          #   case 0x18
           # ==========================================================
 
-          old_legacy = (
+          original_mod = (
               'const __m128i modulo = '
-              '_mm_cvtsi32_si128_emu(dividend % divisor);'
+              '_mm_cvtsi32_si128_emu('
+              'dividend % divisor);'
           )
 
 
-          legacy_count = s.count(
-              old_legacy
+          count = s.count(
+              original_mod
           )
 
 
-          if legacy_count != 2:
+          print(
+              'Original 64-bit modulo sites:',
+              count
+          )
+
+
+          if count != 4:
               raise SystemExit(
-                  'Expected 2 legacy modulo sites, found '
-                  + str(legacy_count)
+                  'Expected exactly 4 modulo sites, found '
+                  + str(count)
               )
 
 
-          legacy_new = '''const int32_t v10_legacy_remainder =
+          replacement_mod = '''const int32_t v10_remainder =
                     v10_smod64(
                         dividend,
                         divisor
                     );
+
                 const __m128i modulo =
                     _mm_cvtsi32_si128_emu(
-                        (uint32_t)v10_legacy_remainder
+                        (uint32_t)v10_remainder
                     );'''
 
 
           s = s.replace(
-              old_legacy,
-              legacy_new
+              original_mod,
+              replacement_mod
           )
 
 
-          # ==========================================================
-          # ASSERT NO ORIGINAL 64-BIT MODULO REMAINS
-          # ==========================================================
-
-          if 'dividend % divisor' in s:
+          if (
+              'dividend % divisor'
+              in s
+          ):
               raise SystemExit(
-                  'A 64-bit modulo site survived V10 patch'
+                  'Original 64-bit modulo still present'
+              )
+
+
+          if (
+              s.count(
+                  'v10_smod64('
+              ) < 5
+          ):
+              raise SystemExit(
+                  'FASTMOD call count sanity check failed'
               )
 
 
@@ -901,7 +657,7 @@ jobs:
 
 
           # ==========================================================
-          # API BUILD ID
+          # BUILD IDENTIFIER
           # ==========================================================
 
           p = Path(
@@ -912,17 +668,19 @@ jobs:
           api = p.read_text()
 
 
-          if (
+          old_id = (
               'BUILD=A55-HOTPATH-V8'
-              not in api
-          ):
+          )
+
+
+          if old_id not in api:
               raise SystemExit(
-                  'V8 API ID not found'
+                  'Historical V8 BUILD ID not found'
               )
 
 
           api = api.replace(
-              'BUILD=A55-HOTPATH-V8',
+              old_id,
               'BUILD=A55-FASTMOD-V10',
               1
           )
@@ -938,7 +696,7 @@ jobs:
           )
 
           print(
-              'FireStick A55 FASTMOD V10'
+              'A55 FASTMOD V10 PATCHED'
           )
 
           print(
@@ -946,35 +704,20 @@ jobs:
           )
 
           print(
-              'Base                     : EXACT V8'
+              'Base                 : exact V8'
           )
 
           print(
-              'V9 changes               : NONE'
+              'V9 changes           : NONE'
           )
 
           print(
-              'case 0x0c fastmod        : YES'
+              '64/32 remainder      : native 32-bit UDIV'
           )
 
           print(
-              'case 0x18 fastmod        : YES'
-          )
-
-          print(
-              'case 0x18 divisor hoist  : YES'
-          )
-
-          print(
-              '32-bit hardware UDIV     : YES'
-          )
-
-          print(
-              '64-bit software division : REMOVED HOT PATH'
-          )
-
-          print(
-              'direct low32 XOR         : YES'
+              'Modulo sites replaced:',
+              count
           )
 
           print(
@@ -985,10 +728,10 @@ jobs:
 
 
       # ==============================================================
-      # VERIFY PATCH
+      # VERIFY SOURCE
       # ==============================================================
 
-      - name: Verify V10 source
+      - name: Verify FASTMOD V10 source
         shell: bash
         run: |
           set -euo pipefail
@@ -996,48 +739,44 @@ jobs:
           cd src
 
 
-          echo "===== BUILD ID ====="
+          echo "===== V10 BUILD ID ====="
 
           grep -n \
             "A55-FASTMOD-V10" \
             api.cpp
 
 
-          echo "===== HARDWARE UDIV ====="
+          echo "===== UDIV ====="
 
           grep -n \
             '"udiv %0, %1, %2"' \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== FASTMOD ====="
+          echo "===== FASTMOD CALLS ====="
 
           grep -n \
-            "v10_smod64_ctx" \
+            "v10_smod64" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== CASE 0x0C / 0x18 ====="
-
-          grep -n \
-            "v10_make_div32_ctx" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== ORIGINAL 64-BIT MOD CHECK ====="
+          echo "===== CHECK OLD MODULO ====="
 
           if grep -n \
             "dividend % divisor" \
             verus/armv7/verus_clhash_portable.cpp
           then
-              echo "ERROR: original 64-bit modulo remains"
+              echo \
+                "ERROR: original 64-bit modulo survived"
+
               exit 1
           else
-              echo "PASS: no original dividend % divisor remains"
+              echo \
+                "PASS: old 64-bit modulo removed"
           fi
 
 
-          echo "===== V8 HARDWARE AES ====="
+          echo "===== V8 AES ====="
 
           grep -n \
             "v8_aesenc_vec" \
@@ -1066,7 +805,7 @@ jobs:
 
 
       # ==============================================================
-      # MASSIVE MODULO CORRECTNESS TEST
+      # MATH TEST
       # ==============================================================
 
       - name: Verify FASTMOD semantics
@@ -1089,30 +828,34 @@ jobs:
 
 
           def u32(x):
-              return x & MASK32
-
-
-          def udiv32(n, d):
-              return n // d
-
-
-          def umod32(n, d):
-              q = udiv32(
-                  n,
-                  d
+              return (
+                  x &
+                  MASK32
               )
+
+
+          def umod32(
+              numerator,
+              denominator
+          ):
+              q = (
+                  numerator //
+                  denominator
+              )
+
 
               return u32(
-                  n -
-                  q * d
+                  numerator -
+                  q * denominator
               )
 
 
-          def fast_unsigned_mod64_32(
+          def fast_umod64_32(
               numerator,
               d
           ):
-              assert 0 < d <= 0xffffffff
+              if d == 1:
+                  return 0
 
 
               u1 = (
@@ -1125,10 +868,6 @@ jobs:
                   numerator &
                   MASK32
               )
-
-
-              if d == 1:
-                  return 0
 
 
               if u1 >= d:
@@ -1206,8 +945,8 @@ jobs:
               )
 
 
-              q1 = udiv32(
-                  un32,
+              q1 = (
+                  un32 //
                   vn1
               )
 
@@ -1221,17 +960,13 @@ jobs:
               while (
                   q1 >= 0x10000 or
                   q1 * vn0 >
-                      u32(
-                          (
-                              rhat <<
-                              16
-                          ) +
+                      (
+                          (rhat << 16) +
                           un1
                       )
               ):
                   q1 = u32(
-                      q1 -
-                      1
+                      q1 - 1
                   )
 
 
@@ -1241,10 +976,7 @@ jobs:
                   )
 
 
-                  if (
-                      rhat >=
-                      0x10000
-                  ):
+                  if rhat >= 0x10000:
                       break
 
 
@@ -1258,8 +990,8 @@ jobs:
               )
 
 
-              q0 = udiv32(
-                  un21,
+              q0 = (
+                  un21 //
                   vn1
               )
 
@@ -1273,17 +1005,13 @@ jobs:
               while (
                   q0 >= 0x10000 or
                   q0 * vn0 >
-                      u32(
-                          (
-                              rhat <<
-                              16
-                          ) +
+                      (
+                          (rhat << 16) +
                           un0
                       )
               ):
                   q0 = u32(
-                      q0 -
-                      1
+                      q0 - 1
                   )
 
 
@@ -1293,10 +1021,7 @@ jobs:
                   )
 
 
-                  if (
-                      rhat >=
-                      0x10000
-                  ):
+                  if rhat >= 0x10000:
                       break
 
 
@@ -1316,24 +1041,26 @@ jobs:
               )
 
 
-          def c_remainder(a, b):
-              # C/C++ truncates signed division toward zero.
+          def c_remainder(
+              dividend,
+              divisor
+          ):
               q = (
-                  abs(a) //
-                  abs(b)
+                  abs(dividend) //
+                  abs(divisor)
               )
 
 
               if (
-                  (a < 0) !=
-                  (b < 0)
+                  (dividend < 0) !=
+                  (divisor < 0)
               ):
                   q = -q
 
 
               return (
-                  a -
-                  q * b
+                  dividend -
+                  q * divisor
               )
 
 
@@ -1347,39 +1074,38 @@ jobs:
               )
 
 
-              if dividend < 0:
-                  magnitude = (
-                      (~raw + 1) &
-                      MASK64
+              magnitude = (
+                  ((~raw + 1) & MASK64)
+                  if dividend < 0
+                  else raw
+              )
+
+
+              d = (
+                  -divisor
+                  if divisor < 0
+                  else divisor
+              )
+
+
+              remainder = (
+                  fast_umod64_32(
+                      magnitude,
+                      d
                   )
-              else:
-                  magnitude = raw
-
-
-              if divisor < 0:
-                  d = (
-                      -divisor
-                  )
-              else:
-                  d = divisor
-
-
-              r = fast_unsigned_mod64_32(
-                  magnitude,
-                  d
               )
 
 
               return (
-                  -r
+                  -remainder
                   if dividend < 0
-                  else r
+                  else remainder
               )
 
 
-          # ----------------------------------------------------------
+          # ==========================================================
           # EDGE CASES
-          # ----------------------------------------------------------
+          # ==========================================================
 
           dividends = [
               -(1 << 63),
@@ -1406,7 +1132,7 @@ jobs:
               -(1 << 31),
               -(1 << 31) + 1,
               -2147483647,
-              -0x10000,
+              -65536,
               -65535,
               -3,
               -2,
@@ -1415,7 +1141,7 @@ jobs:
               2,
               3,
               65535,
-              0x10000,
+              65536,
               2147483646,
               2147483647,
           ]
@@ -1430,29 +1156,29 @@ jobs:
                   )
 
 
-                  fast = fast_signed_mod(
+                  result = fast_signed_mod(
                       dividend,
                       divisor
                   )
 
 
-                  if fast != reference:
+                  if result != reference:
                       raise SystemExit(
                           'EDGE MISMATCH: '
                           f'{dividend} % {divisor} '
-                          f'fast={fast} '
-                          f'ref={reference}'
+                          f'fast={result} '
+                          f'reference={reference}'
                       )
 
 
           print(
-              'Edge cases: PASS'
+              'FASTMOD edge cases: PASS'
           )
 
 
-          # ----------------------------------------------------------
-          # RANDOM CASES
-          # ----------------------------------------------------------
+          # ==========================================================
+          # 1,000,000 RANDOM TESTS
+          # ==============================================================
 
           random.seed(
               0xA55F10
@@ -1460,7 +1186,7 @@ jobs:
 
 
           for i in range(
-              200000
+              1000000
           ):
               dividend = random.randint(
                   -(1 << 63),
@@ -1484,24 +1210,24 @@ jobs:
               )
 
 
-              fast = fast_signed_mod(
+              result = fast_signed_mod(
                   dividend,
                   divisor
               )
 
 
-              if fast != reference:
+              if result != reference:
                   raise SystemExit(
                       'RANDOM MISMATCH '
-                      f'at test {i}: '
+                      f'#{i}: '
                       f'{dividend} % {divisor} '
-                      f'fast={fast} '
-                      f'ref={reference}'
+                      f'fast={result} '
+                      f'reference={reference}'
                   )
 
 
           print(
-              '200000 random FASTMOD tests: PASS'
+              '1,000,000 random FASTMOD tests: PASS'
           )
 
           print(
@@ -1564,7 +1290,6 @@ jobs:
 
           echo "===== OUTPUT ====="
 
-
           find \
             build-output \
             -maxdepth 4 \
@@ -1573,7 +1298,6 @@ jobs:
 
 
           echo "===== BUILD LOG ====="
-
 
           tail -n 300 \
             build-output/ccminer-armeabi-v7a/log/armeabi-v7a.log
@@ -1612,23 +1336,7 @@ jobs:
               "A55-FASTMOD-V10"
 
 
-          echo "===== UDIV DISASSEMBLY ====="
-
-          if command -v llvm-objdump >/dev/null 2>&1
-          then
-              llvm-objdump \
-                -d \
-                "$BIN" |
-                grep -m 20 \
-                  -E "\budiv\b" ||
-                true
-          else
-              echo \
-                "llvm-objdump unavailable on runner"
-          fi
-
-
-          echo "===== AEABI LDIVMOD SYMBOL ====="
+          echo "===== DIVISION HELPER ====="
 
           readelf \
             -Ws \
@@ -1639,17 +1347,7 @@ jobs:
               "GOOD: __aeabi_ldivmod not linked"
 
 
-          echo "===== V10 SYMBOLS ====="
-
-          readelf \
-            -Ws \
-            "$BIN" |
-            grep \
-              "v10_" ||
-            true
-
-
-          echo "===== BINARY SIZE ====="
+          echo "===== SIZE ====="
 
           ls -lh \
             "$BIN"
@@ -1707,13 +1405,13 @@ jobs:
           Build:
           A55-FASTMOD-V10
 
-          Strategy:
-          Exact V8 champion plus specialized AArch32 fast modulo.
+          Base:
+          Exact A55-HOTPATH-V8 champion
 
-          V8 workflow commit:
+          Historical V8 workflow:
           6cf06bdd8f85afef8793180e6dd68b4a1a4fd9f0
 
-          ccminer source commit:
+          ccminer source:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI:
@@ -1722,17 +1420,11 @@ jobs:
           CPU:
           Cortex-A55
 
-          Previous champion:
-          A55-HOTPATH-V8
-
-          Previous measured performance:
+          V8 measured baseline:
           approximately 679 kH/s
 
-          V9 changes:
+          V9 modifications:
           NOT INCLUDED
-
-          V3 alignment fixes:
-          preserved
 
           Hardware AES:
           preserved
@@ -1746,60 +1438,39 @@ jobs:
           NEON VTBL:
           preserved
 
-          Register bridges:
-          preserved
-
-          FixKey unroll:
-          preserved
-
           Partial Haraka:
           preserved
 
           Haraka hot path:
           34 AES operations
 
-          Haraka runtime self-test:
+          Runtime self-test:
           preserved
 
           Full candidate replay:
           preserved
 
-          New V10 optimization:
-          exact signed 64/32 remainder
+          New optimization:
+          exact AArch32 FASTMOD
 
-          AArch32 32-bit hardware UDIV:
-          enabled
+          int64 % int32 CLHash sites:
+          replaced
 
-          Active modulo case 0x0c:
-          optimized
+          Native UDIV:
+          32-bit
 
-          Active modulo case 0x18:
-          optimized
-
-          Case 0x18 divisor normalization:
-          hoisted outside inner loop
-
-          Direct low32 modulo XOR:
-          enabled
-
-          Floating point reciprocal:
-          NOT USED
+          Floating point:
+          not used
 
           Approximate division:
-          NOT USED
+          not used
 
-          FASTMOD workflow semantic tests:
-          200000 random cases + edge cases
+          Semantic validation:
+          1,000,000 random tests plus edge cases
 
           API:
           BUILD=A55-FASTMOD-V10
           EOF
-
-
-          echo "===== PACKAGE ====="
-
-          ls -lh \
-            dist/
 
 
           echo "===== SHA256 ====="
@@ -1811,7 +1482,7 @@ jobs:
 
 
       # ==============================================================
-      # ARTIFACT
+      # UPLOAD
       # ==============================================================
 
       - name: Upload FASTMOD V10 artifact
