@@ -1,4 +1,4 @@
-name: FireStick A55 OPT PMULL V4
+name: FireStick A55 ZeroCopy PMULL V5
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
           repository: shmutalov/ccminer
           ref: 7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
-      - name: Patch Cortex-A55 AES PMULL and SIGBUS fixes
+      - name: Patch FireStick A55 V5
         shell: bash
         run: |
           python3 - <<'PY'
@@ -31,7 +31,7 @@ jobs:
               p.write_text(s.replace(old, new, 1))
 
           # ============================================================
-          # 1. Cortex-A55 / ARMv8 Crypto / AArch32
+          # Cortex-A55 / ARMv8 crypto / AArch32
           # ============================================================
           replace_once(
               'Makefile.am',
@@ -40,7 +40,7 @@ jobs:
           )
 
           # ============================================================
-          # 2. V3 alignment fixes — KEEP EXACTLY
+          # V3 alignment fixes — DO NOT CHANGE
           # ============================================================
           replace_once(
               'verus/armv7/verusscan.cpp',
@@ -83,7 +83,7 @@ jobs:
           )
 
           # ============================================================
-          # 3. Hardware AES — same proven V3 implementation
+          # Hardware AES — V4 implementation preserved
           # ============================================================
           p = Path('verus/armv7/haraka_portable.c')
           s = p.read_text()
@@ -110,7 +110,7 @@ jobs:
           p.write_text(s[:start] + hw_aes + s[end:])
 
           # ============================================================
-          # 4. Haraka safe temporary vector returns
+          # Safe Haraka returns — preserve Bus-error fix
           # ============================================================
           p = Path('verus/armv7/haraka_portable.h')
           s = p.read_text()
@@ -130,7 +130,7 @@ jobs:
           p.write_text(s)
 
           # ============================================================
-          # 5. CLHash safe returns and safe NEON loads/stores
+          # Safe CLHash loads/stores/returns — preserve V4 stability
           # ============================================================
           p = Path('verus/armv7/verus_clhash_portable.cpp')
           s = p.read_text()
@@ -177,40 +177,33 @@ jobs:
           s = s[:start] + safe_store + s[end:]
 
           # ============================================================
-          # 6. V4: REAL ARMv8 PMULL under 32-bit AArch32
+          # V5 — ZERO-COPY HARDWARE PMULL
           #
-          # We do NOT use vmull_p64() intrinsic because Android's
-          # AArch32 headers did not expose it.
+          # V4:
+          #   NEON -> memcpy -> arrays -> vector -> PMULL -> memcpy
           #
-          # Instead Clang directly emits:
-          #     vmull.p64 qX, dY, dZ
+          # V5:
+          #   NEON register -> lane -> PMULL -> NEON register
           # ============================================================
           start = s.index('__m128i _mm_clmulepi64_si128_emu')
           end = s.index('\n__m128i _mm_mulhrs_epi16_emu', start)
 
-          hw_pmull = r'''__m128i _mm_clmulepi64_si128_emu(const __m128i &a, const __m128i &b, int imm)
+          zero_copy_pmull = r'''static inline __attribute__((always_inline))
+          __m128i _mm_clmulepi64_si128_emu(const __m128i &a, const __m128i &b, int imm)
           {
-              uint64_t av[2];
-              uint64_t bv[2];
+              const uint64x2_t av =
+                  vreinterpretq_u64_s32(a);
 
-              memcpy(av, &a, sizeof(av));
-              memcpy(bv, &b, sizeof(bv));
+              const uint64x2_t bv =
+                  vreinterpretq_u64_s32(b);
 
-              typedef uint64_t pmull_u64x1_t
-                  __attribute__((neon_vector_type(1)));
+              const uint64x1_t va =
+                  (imm & 1) ? vget_high_u64(av) : vget_low_u64(av);
 
-              typedef uint64_t pmull_u64x2_t
-                  __attribute__((neon_vector_type(2)));
+              const uint64x1_t vb =
+                  (imm & 0x10) ? vget_high_u64(bv) : vget_low_u64(bv);
 
-              pmull_u64x1_t va = {
-                  av[imm & 1]
-              };
-
-              pmull_u64x1_t vb = {
-                  bv[(imm >> 4) & 1]
-              };
-
-              pmull_u64x2_t product;
+              uint64x2_t product;
 
               __asm__ volatile(
                   "vmull.p64 %q0, %P1, %P2"
@@ -218,51 +211,64 @@ jobs:
                   : "w"(va), "w"(vb)
               );
 
-              __m128i out;
-              memcpy(&out, &product, sizeof(out));
-              return out;
+              return vreinterpretq_s32_u64(product);
           }
           '''
 
-          s = s[:start] + hw_pmull + s[end:]
+          s = s[:start] + zero_copy_pmull + s[end:]
 
           p.write_text(s)
 
-          print('=====================================')
-          print('FireStick A55 OPT PMULL V4')
-          print('=====================================')
-          print('V3 SIGBUS fixes      : PRESERVED')
-          print('Cortex-A55 tuning    : ENABLED')
-          print('ARMv8 Crypto         : ENABLED')
-          print('Hardware AES         : ENABLED')
-          print('Hardware PMULL       : ENABLED')
-          print('AArch32               : YES')
-          print('safe NEON loads      : ENABLED')
-          print('64-byte data_key     : ENABLED')
-          print('32-byte blockhash    : ENABLED')
+          # ============================================================
+          # V5 build identification directly in API summary
+          # ============================================================
+          p = Path('api.cpp')
+          s = p.read_text()
+
+          old = '''sprintf(buffer, "NAME=%s;VER=%s;API=%s;"'''
+
+          new = '''sprintf(buffer, "NAME=%s;VER=%s;BUILD=A55-ZEROCOPY-V5;API=%s;"'''
+
+          if old not in s:
+              raise SystemExit('API summary signature not found')
+
+          p.write_text(s.replace(old, new, 1))
+
+          print('=======================================')
+          print('FireStick A55 ZeroCopy PMULL V5')
+          print('=======================================')
+          print('V3 SIGBUS fixes       : PRESERVED')
+          print('V4 hardware AES       : PRESERVED')
+          print('V4 hardware PMULL     : PRESERVED')
+          print('V5 zero-copy PMULL    : ENABLED')
+          print('V5 always-inline      : ENABLED')
+          print('API build identifier  : A55-ZEROCOPY-V5')
           PY
 
-      - name: Verify V4 patches
+      - name: Verify V5 patches
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== CPU FLAGS ====="
+          echo "===== CPU ====="
           grep -n "cortex-a55" Makefile.am
 
           echo "===== AES ====="
           grep -n "vaeseq_u8" verus/armv7/haraka_portable.c
-          grep -n "vaesmcq_u8" verus/armv7/haraka_portable.c
 
           echo "===== PMULL ====="
           grep -n "vmull.p64" verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== ALIGNMENT ====="
-          grep -n "alignas" verus/armv7/verusscan.cpp
-          grep -n "posix_memalign" verus/armv7/verusscan.cpp
+          echo "===== ZERO COPY ====="
+          grep -n "vget_high_u64" verus/armv7/verus_clhash_portable.cpp
+          grep -n "always_inline" verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== SAFE NEON ====="
-          grep -n "vld1q_u8" verus/armv7/verus_clhash_portable.cpp
+          echo "===== API VERSION ====="
+          grep -n "A55-ZEROCOPY-V5" api.cpp
+
+          echo "===== ALIGNMENT ====="
+          grep -n "posix_memalign" verus/armv7/verusscan.cpp
+          grep -n "alignas" verus/armv7/verusscan.cpp
 
       - name: Make Android build script executable
         run: chmod +x scripts/build-android-ccminer.sh
@@ -273,7 +279,7 @@ jobs:
           set -euo pipefail
 
           docker build \
-            -t ccminer-firestick-a55-pmull-v4 \
+            -t ccminer-firestick-a55-v5 \
             -f build.Dockerfile \
             .
 
@@ -287,7 +293,7 @@ jobs:
 
           docker run --rm \
             -v "$PWD/build-output:/build/output" \
-            ccminer-firestick-a55-pmull-v4 \
+            ccminer-firestick-a55-v5 \
             arm
 
           echo "===== OUTPUT ====="
@@ -300,7 +306,7 @@ jobs:
           test -f \
             build-output/ccminer-armeabi-v7a/bin/ccminer
 
-      - name: Prepare unique V4 package
+      - name: Prepare V5 package
         shell: bash
         run: |
           set -euo pipefail
@@ -311,53 +317,52 @@ jobs:
           BIN="build-output/ccminer-armeabi-v7a/bin"
 
           cp "$BIN/ccminer" \
-            dist/ccminer-a55-pmull-v4
+            dist/ccminer-a55-zerocopy-v5
 
-          if [ -f "$BIN/libc++_shared.so" ]; then
-            cp "$BIN/libc++_shared.so" dist/
-          fi
+          test -f "$BIN/libc++_shared.so" && \
+            cp "$BIN/libc++_shared.so" dist/ || true
 
-          if [ -f "$BIN/libomp.so" ]; then
-            cp "$BIN/libomp.so" dist/
-          fi
+          test -f "$BIN/libomp.so" && \
+            cp "$BIN/libomp.so" dist/ || true
 
-          chmod +x dist/ccminer-a55-pmull-v4
+          chmod +x dist/ccminer-a55-zerocopy-v5
 
           cat > dist/BUILDINFO.txt <<EOF
-          Build: FireStick A55 OPT PMULL V4
+          Build: A55-ZEROCOPY-V5
           Source: 7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI: armeabi-v7a / AArch32
           Android API: 23
 
-          Cortex-A55 tuning: enabled
-          ARMv8 crypto extensions: enabled
+          Cortex-A55 tune: enabled
+          ARMv8 crypto: enabled
           Hardware AES: enabled
-          Hardware PMULL vmull.p64: enabled
+          Hardware PMULL: enabled
+          Zero-copy PMULL: enabled
+          Always-inline PMULL: enabled
 
           V3 SIGBUS alignment fixes: preserved
-          blockhash_half alignment: 32 bytes
-          data_key alignment: 64 bytes
-          safe NEON load/store: enabled
 
-          Baseline V3:
-          approximately 209-212 kH/s
-          4 cores at 1696000 kHz
-          DISCO=0
+          API identifier:
+          BUILD=A55-ZEROCOPY-V5
+
+          V4 baseline:
+          approximately 408-410 kH/s
           REJ=0
           STALE=0
+          DISCO=0
           EOF
 
           echo "===== BINARY ====="
-          file dist/ccminer-a55-pmull-v4
+          file dist/ccminer-a55-zerocopy-v5
 
           echo "===== SHA256 ====="
           sha256sum dist/* | tee dist/SHA256SUMS.txt
 
-      - name: Upload V4 artifact
+      - name: Upload V5 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firestick-a55-pmull-v4-${{ github.run_number }}
+          name: firestick-a55-zerocopy-v5-${{ github.run_number }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
