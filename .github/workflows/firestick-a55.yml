@@ -1,4 +1,4 @@
-name: FireStick A55 ZeroCopy PMULL V5
+name: FireStick A55 NEON MULHRS V6
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
           repository: shmutalov/ccminer
           ref: 7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
-      - name: Patch FireStick A55 V5
+      - name: Patch FireStick A55 V6
         shell: bash
         run: |
           python3 - <<'PY'
@@ -31,7 +31,7 @@ jobs:
               p.write_text(s.replace(old, new, 1))
 
           # ============================================================
-          # Cortex-A55 / ARMv8 crypto / AArch32
+          # Cortex-A55 / ARMv8 Crypto / AArch32
           # ============================================================
           replace_once(
               'Makefile.am',
@@ -40,7 +40,7 @@ jobs:
           )
 
           # ============================================================
-          # V3 alignment fixes — DO NOT CHANGE
+          # V3 SIGBUS ALIGNMENT FIXES — PRESERVE EXACTLY
           # ============================================================
           replace_once(
               'verus/armv7/verusscan.cpp',
@@ -83,7 +83,7 @@ jobs:
           )
 
           # ============================================================
-          # Hardware AES — V4 implementation preserved
+          # HARDWARE AES — V4/V5 PRESERVED
           # ============================================================
           p = Path('verus/armv7/haraka_portable.c')
           s = p.read_text()
@@ -110,7 +110,7 @@ jobs:
           p.write_text(s[:start] + hw_aes + s[end:])
 
           # ============================================================
-          # Safe Haraka returns — preserve Bus-error fix
+          # SAFE HARAKA RETURNS — PRESERVE SIGBUS FIX
           # ============================================================
           p = Path('verus/armv7/haraka_portable.h')
           s = p.read_text()
@@ -130,7 +130,7 @@ jobs:
           p.write_text(s)
 
           # ============================================================
-          # Safe CLHash loads/stores/returns — preserve V4 stability
+          # CLHASH SAFE RETURNS + LOAD/STORE
           # ============================================================
           p = Path('verus/armv7/verus_clhash_portable.cpp')
           s = p.read_text()
@@ -177,13 +177,7 @@ jobs:
           s = s[:start] + safe_store + s[end:]
 
           # ============================================================
-          # V5 — ZERO-COPY HARDWARE PMULL
-          #
-          # V4:
-          #   NEON -> memcpy -> arrays -> vector -> PMULL -> memcpy
-          #
-          # V5:
-          #   NEON register -> lane -> PMULL -> NEON register
+          # V5 ZERO-COPY HARDWARE PMULL — PRESERVE EXACTLY
           # ============================================================
           start = s.index('__m128i _mm_clmulepi64_si128_emu')
           end = s.index('\n__m128i _mm_mulhrs_epi16_emu', start)
@@ -217,17 +211,82 @@ jobs:
 
           s = s[:start] + zero_copy_pmull + s[end:]
 
+          # ============================================================
+          # V6 — VECTORIZE _mm_mulhrs_epi16_emu
+          #
+          # OLD:
+          #   8 scalar signed multiplies in a C loop
+          #
+          # NEW:
+          #   8 lanes processed with NEON
+          #
+          # Keeps exact old arithmetic:
+          #   ((a*b)+0x4000) >> 15
+          # ============================================================
+          start = s.index('__m128i _mm_mulhrs_epi16_emu')
+          marker = s.index('_mm_set_epi64x_emu', start)
+          end = s.rfind('\n', start, marker) + 1
+
+          neon_mulhrs = r'''static inline __attribute__((always_inline))
+          __m128i _mm_mulhrs_epi16_emu(__m128i a, __m128i b)
+          {
+              const int16x8_t va =
+                  vreinterpretq_s16_m128i(a);
+
+              const int16x8_t vb =
+                  vreinterpretq_s16_m128i(b);
+
+              const int32x4_t prod_lo =
+                  vmull_s16(
+                      vget_low_s16(va),
+                      vget_low_s16(vb)
+                  );
+
+              const int32x4_t prod_hi =
+                  vmull_s16(
+                      vget_high_s16(va),
+                      vget_high_s16(vb)
+                  );
+
+              const int32x4_t rounding =
+                  vdupq_n_s32(0x4000);
+
+              const int32x4_t rounded_lo =
+                  vshrq_n_s32(
+                      vaddq_s32(prod_lo, rounding),
+                      15
+                  );
+
+              const int32x4_t rounded_hi =
+                  vshrq_n_s32(
+                      vaddq_s32(prod_hi, rounding),
+                      15
+                  );
+
+              const int16x8_t result =
+                  vcombine_s16(
+                      vmovn_s32(rounded_lo),
+                      vmovn_s32(rounded_hi)
+                  );
+
+              return vreinterpretq_m128i_s16(result);
+          }
+
+          '''
+
+          s = s[:start] + neon_mulhrs + s[end:]
+
           p.write_text(s)
 
           # ============================================================
-          # V5 build identification directly in API summary
+          # V6 ID IN API
           # ============================================================
           p = Path('api.cpp')
           s = p.read_text()
 
           old = '''sprintf(buffer, "NAME=%s;VER=%s;API=%s;"'''
 
-          new = '''sprintf(buffer, "NAME=%s;VER=%s;BUILD=A55-ZEROCOPY-V5;API=%s;"'''
+          new = '''sprintf(buffer, "NAME=%s;VER=%s;BUILD=A55-NEON-MULHRS-V6;API=%s;"'''
 
           if old not in s:
               raise SystemExit('API summary signature not found')
@@ -235,17 +294,18 @@ jobs:
           p.write_text(s.replace(old, new, 1))
 
           print('=======================================')
-          print('FireStick A55 ZeroCopy PMULL V5')
+          print('FireStick A55 NEON MULHRS V6')
           print('=======================================')
           print('V3 SIGBUS fixes       : PRESERVED')
           print('V4 hardware AES       : PRESERVED')
           print('V4 hardware PMULL     : PRESERVED')
-          print('V5 zero-copy PMULL    : ENABLED')
-          print('V5 always-inline      : ENABLED')
-          print('API build identifier  : A55-ZEROCOPY-V5')
+          print('V5 zero-copy PMULL    : PRESERVED')
+          print('V6 NEON MULHRS        : ENABLED')
+          print('V6 always-inline      : ENABLED')
+          print('API build identifier  : A55-NEON-MULHRS-V6')
           PY
 
-      - name: Verify V5 patches
+      - name: Verify V6 patches
         shell: bash
         run: |
           set -euo pipefail
@@ -254,21 +314,33 @@ jobs:
           grep -n "cortex-a55" Makefile.am
 
           echo "===== AES ====="
-          grep -n "vaeseq_u8" verus/armv7/haraka_portable.c
+          grep -n "vaeseq_u8" \
+            verus/armv7/haraka_portable.c
 
           echo "===== PMULL ====="
-          grep -n "vmull.p64" verus/armv7/verus_clhash_portable.cpp
+          grep -n "vmull.p64" \
+            verus/armv7/verus_clhash_portable.cpp
 
           echo "===== ZERO COPY ====="
-          grep -n "vget_high_u64" verus/armv7/verus_clhash_portable.cpp
-          grep -n "always_inline" verus/armv7/verus_clhash_portable.cpp
+          grep -n "vget_high_u64" \
+            verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== API VERSION ====="
-          grep -n "A55-ZEROCOPY-V5" api.cpp
+          echo "===== NEON MULHRS ====="
+          grep -n "vmull_s16" \
+            verus/armv7/verus_clhash_portable.cpp
+
+          grep -n "vmovn_s32" \
+            verus/armv7/verus_clhash_portable.cpp
+
+          echo "===== API ID ====="
+          grep -n "A55-NEON-MULHRS-V6" api.cpp
 
           echo "===== ALIGNMENT ====="
-          grep -n "posix_memalign" verus/armv7/verusscan.cpp
-          grep -n "alignas" verus/armv7/verusscan.cpp
+          grep -n "posix_memalign" \
+            verus/armv7/verusscan.cpp
+
+          grep -n "alignas" \
+            verus/armv7/verusscan.cpp
 
       - name: Make Android build script executable
         run: chmod +x scripts/build-android-ccminer.sh
@@ -279,7 +351,7 @@ jobs:
           set -euo pipefail
 
           docker build \
-            -t ccminer-firestick-a55-v5 \
+            -t ccminer-firestick-a55-v6 \
             -f build.Dockerfile \
             .
 
@@ -293,7 +365,7 @@ jobs:
 
           docker run --rm \
             -v "$PWD/build-output:/build/output" \
-            ccminer-firestick-a55-v5 \
+            ccminer-firestick-a55-v6 \
             arm
 
           echo "===== OUTPUT ====="
@@ -306,7 +378,7 @@ jobs:
           test -f \
             build-output/ccminer-armeabi-v7a/bin/ccminer
 
-      - name: Prepare V5 package
+      - name: Prepare V6 package
         shell: bash
         run: |
           set -euo pipefail
@@ -317,7 +389,7 @@ jobs:
           BIN="build-output/ccminer-armeabi-v7a/bin"
 
           cp "$BIN/ccminer" \
-            dist/ccminer-a55-zerocopy-v5
+            dist/ccminer-a55-neon-mulhrs-v6
 
           test -f "$BIN/libc++_shared.so" && \
             cp "$BIN/libc++_shared.so" dist/ || true
@@ -325,10 +397,10 @@ jobs:
           test -f "$BIN/libomp.so" && \
             cp "$BIN/libomp.so" dist/ || true
 
-          chmod +x dist/ccminer-a55-zerocopy-v5
+          chmod +x dist/ccminer-a55-neon-mulhrs-v6
 
           cat > dist/BUILDINFO.txt <<EOF
-          Build: A55-ZEROCOPY-V5
+          Build: A55-NEON-MULHRS-V6
           Source: 7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI: armeabi-v7a / AArch32
@@ -339,30 +411,31 @@ jobs:
           Hardware AES: enabled
           Hardware PMULL: enabled
           Zero-copy PMULL: enabled
-          Always-inline PMULL: enabled
+          NEON MULHRS: enabled
+          Always-inline hot helpers: enabled
 
-          V3 SIGBUS alignment fixes: preserved
+          V3 SIGBUS fixes: preserved
 
           API identifier:
-          BUILD=A55-ZEROCOPY-V5
+          BUILD=A55-NEON-MULHRS-V6
 
-          V4 baseline:
-          approximately 408-410 kH/s
+          V5 baseline:
+          approximately 424 kH/s
           REJ=0
           STALE=0
           DISCO=0
           EOF
 
           echo "===== BINARY ====="
-          file dist/ccminer-a55-zerocopy-v5
+          file dist/ccminer-a55-neon-mulhrs-v6
 
           echo "===== SHA256 ====="
           sha256sum dist/* | tee dist/SHA256SUMS.txt
 
-      - name: Upload V5 artifact
+      - name: Upload V6 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firestick-a55-zerocopy-v5-${{ github.run_number }}
+          name: firestick-a55-neon-mulhrs-v6-${{ github.run_number }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
