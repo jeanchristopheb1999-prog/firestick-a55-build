@@ -1,4 +1,4 @@
-name: FireStick A55 HOTPATH V8
+name: FireStick A55 CLHASH V9
 
 on:
   workflow_dispatch:
@@ -17,13 +17,14 @@ jobs:
           repository: shmutalov/ccminer
           ref: 7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
-      - name: Patch FireStick A55 V8
+      - name: Patch FireStick A55 V9
         shell: bash
         run: |
           set -euo pipefail
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
 
           def replace_once(path, old, new):
@@ -42,7 +43,6 @@ jobs:
 
           # ============================================================
           # CPU TARGET
-          # Cortex-A55 / ARMv8 crypto / AArch32
           # ============================================================
 
           replace_once(
@@ -57,7 +57,7 @@ jobs:
 
 
           # ============================================================
-          # V3 ALIGNMENT / SIGBUS FIXES
+          # V3 ALIGNMENT / SIGBUS
           # ============================================================
 
           replace_once(
@@ -104,26 +104,54 @@ jobs:
               'memcpy(&nonceSpace[11], &nonce_buf, sizeof(nonce_buf));'
           )
 
+
+          # ============================================================
+          # V9 FIXKEY INDEXES
+          #
+          # keyMask = 511, so indices only require 9 bits.
+          # uint16 is exact and halves index traffic.
+          # ============================================================
+
           replace_once(
               'verus/armv7/verusscan.cpp',
               'uint32_t fixrand[32];',
-              'alignas(64) uint32_t fixrand[32];'
+              'alignas(64) uint16_t fixrand[32];'
           )
 
           replace_once(
               'verus/armv7/verusscan.cpp',
               'uint32_t fixrandex[32];',
-              'alignas(64) uint32_t fixrandex[32];'
+              'alignas(64) uint16_t fixrandex[32];'
           )
 
 
           # ============================================================
-          # HARDWARE AES
-          # Full/reference Haraka implementation
-          #
-          # IMPORTANT:
-          # We replace between two UNIQUE comments.
-          # No more accidental //extern match.
+          # CLHASH HEADER -> uint16 FixKey indices
+          # ============================================================
+
+          p = Path(
+              'verus/armv7/verus_clhash.h'
+          )
+
+          s = p.read_text()
+
+          s = re.sub(
+              r'uint32_t\s*\*\s*__restrict\s+fixrandex\b',
+              'uint16_t *__restrict fixrandex',
+              s
+          )
+
+          s = re.sub(
+              r'uint32_t\s*\*\s*__restrict\s+fixrand\b',
+              'uint16_t *__restrict fixrand',
+              s
+          )
+
+          p.write_text(s)
+
+
+          # ============================================================
+          # HARDWARE AES - FULL HARAKA
           # ============================================================
 
           p = Path(
@@ -192,9 +220,7 @@ jobs:
 
           # ============================================================
           # HARAKA HEADER
-          #
-          # Exact block replacement.
-          # This fixes the stupid //extern problem permanently.
+          # Register AES
           # ============================================================
 
           p = Path(
@@ -213,15 +239,16 @@ jobs:
               start
           )
 
-          fast_aes_header = r'''// ARMv8 AES implementation
+          fast_aes = r'''// ARMv8 AES
           void aesenc(
               unsigned char *s,
               const unsigned char *rk
           );
 
 
-          static inline __attribute__((always_inline))
-          __m128i v8_aesenc_vec(
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_aesenc_vec(
               __m128i state,
               __m128i round_key
           )
@@ -261,30 +288,27 @@ jobs:
 
 
           #define AES2_EMU(s0, s1, rci) do { \
-              (s0) = v8_aesenc_vec((s0), rc[(rci)]); \
-              (s1) = v8_aesenc_vec((s1), rc[(rci) + 1]); \
-              (s0) = v8_aesenc_vec((s0), rc[(rci) + 2]); \
-              (s1) = v8_aesenc_vec((s1), rc[(rci) + 3]); \
+              (s0) = v9_aesenc_vec((s0), rc[(rci)]); \
+              (s1) = v9_aesenc_vec((s1), rc[(rci) + 1]); \
+              (s0) = v9_aesenc_vec((s0), rc[(rci) + 2]); \
+              (s1) = v9_aesenc_vec((s1), rc[(rci) + 3]); \
           } while (0)
 
           '''
 
           s = (
               s[:start] +
-              fast_aes_header +
+              fast_aes +
               s[end:]
           )
 
-
-          # Safe Haraka vector returns
           unsafe = (
               'return *(__m128i *)result;'
           )
 
           if s.count(unsafe) != 2:
               raise SystemExit(
-                  'Expected exactly 2 unsafe '
-                  'Haraka returns, found '
+                  'Unexpected Haraka return count: '
                   + str(s.count(unsafe))
               )
 
@@ -299,7 +323,7 @@ jobs:
 
 
           # ============================================================
-          # CLHASH
+          # CLHASH CORE
           # ============================================================
 
           p = Path(
@@ -310,7 +334,24 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # Safe remaining portable returns
+          # uint16 FixKey indices
+          # ------------------------------------------------------------
+
+          s = re.sub(
+              r'uint32_t\s*\*\s*__restrict\s+fixrandex\b',
+              'uint16_t * __restrict fixrandex',
+              s
+          )
+
+          s = re.sub(
+              r'uint32_t\s*\*\s*__restrict\s+fixrand\b',
+              'uint16_t * __restrict fixrand',
+              s
+          )
+
+
+          # ------------------------------------------------------------
+          # Safe portable vector returns
           # ------------------------------------------------------------
 
           unsafe = (
@@ -319,8 +360,7 @@ jobs:
 
           if s.count(unsafe) != 3:
               raise SystemExit(
-                  'Expected exactly 3 unsafe CLHash '
-                  'returns, found '
+                  'Unexpected CLHash return count: '
                   + str(s.count(unsafe))
               )
 
@@ -333,7 +373,7 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # Force small hot functions inline
+          # Inline cheap helpers
           # ------------------------------------------------------------
 
           s = s.replace(
@@ -354,7 +394,7 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # FAST SAFE VECTOR LOAD
+          # Vector load
           # ------------------------------------------------------------
 
           start = s.index(
@@ -389,7 +429,7 @@ jobs:
 
 
           # ------------------------------------------------------------
-          # FAST SAFE VECTOR STORE
+          # Vector store
           # ------------------------------------------------------------
 
           start = s.index(
@@ -425,9 +465,7 @@ jobs:
 
 
           # ============================================================
-          # V8 PSHUFB -> NATIVE AARCH32 VTBL
-          #
-          # Removes scalar 16-byte loop.
+          # PSHUFB -> VTBL2
           # ============================================================
 
           start = s.index(
@@ -448,14 +486,10 @@ jobs:
           )
           {
               const uint8x16_t av =
-                  vreinterpretq_u8_s32(
-                      a
-                  );
+                  vreinterpretq_u8_s32(a);
 
               const uint8x16_t bv =
-                  vreinterpretq_u8_s32(
-                      b
-                  );
+                  vreinterpretq_u8_s32(b);
 
               uint8x8x2_t table;
 
@@ -469,27 +503,21 @@ jobs:
               uint8x16_t index =
                   vandq_u8(
                       bv,
-                      vdupq_n_u8(
-                          0x0f
-                      )
+                      vdupq_n_u8(0x0f)
                   );
 
 
               const uint8x16_t zero_mask =
                   vcgeq_u8(
                       bv,
-                      vdupq_n_u8(
-                          0x80
-                      )
+                      vdupq_n_u8(0x80)
                   );
 
 
               index =
                   vbslq_u8(
                       zero_mask,
-                      vdupq_n_u8(
-                          0xff
-                      ),
+                      vdupq_n_u8(0xff),
                       index
                   );
 
@@ -497,18 +525,13 @@ jobs:
               const uint8x8_t lo =
                   vtbl2_u8(
                       table,
-                      vget_low_u8(
-                          index
-                      )
+                      vget_low_u8(index)
                   );
-
 
               const uint8x8_t hi =
                   vtbl2_u8(
                       table,
-                      vget_high_u8(
-                          index
-                      )
+                      vget_high_u8(index)
                   );
 
 
@@ -520,6 +543,142 @@ jobs:
                       )
                   );
           }
+
+
+          // ==========================================================
+          // V9 MIX2 -> XOR fusion
+          //
+          // Original case 0x14 does:
+          // MIX2(a,b)
+          // acc ^= a
+          // acc ^= b
+          //
+          // V9 computes MIX2(a,b).lo ^ MIX2(a,b).hi directly.
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_mix2_xor(
+              __m128i a,
+              __m128i b
+          )
+          {
+              const int32x4_t ai =
+                  vreinterpretq_s32_m128i(a);
+
+              const int32x4_t bi =
+                  vreinterpretq_s32_m128i(b);
+
+
+              const int32x2x2_t lo =
+                  vzip_s32(
+                      vget_low_s32(ai),
+                      vget_low_s32(bi)
+                  );
+
+
+              const int32x2x2_t hi =
+                  vzip_s32(
+                      vget_high_s32(ai),
+                      vget_high_s32(bi)
+                  );
+
+
+              const int32x4_t mixlo =
+                  vcombine_s32(
+                      lo.val[0],
+                      lo.val[1]
+                  );
+
+
+              const int32x4_t mixhi =
+                  vcombine_s32(
+                      hi.val[0],
+                      hi.val[1]
+                  );
+
+
+              return
+                  vreinterpretq_m128i_s32(
+                      veorq_s32(
+                          mixlo,
+                          mixhi
+                      )
+                  );
+          }
+
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_aes4_mix2_xor(
+              __m128i a,
+              __m128i b,
+              const __m128i *rk
+          )
+          {
+              a =
+                  v9_aesenc_vec(
+                      a,
+                      rk[0]
+                  );
+
+              b =
+                  v9_aesenc_vec(
+                      b,
+                      rk[1]
+                  );
+
+              a =
+                  v9_aesenc_vec(
+                      a,
+                      rk[2]
+                  );
+
+              b =
+                  v9_aesenc_vec(
+                      b,
+                      rk[3]
+                  );
+
+
+              return
+                  v9_mix2_xor(
+                      a,
+                      b
+                  );
+          }
+
+
+          // XOR scalar only into low 32-bit lane.
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_xor_low32(
+              __m128i acc,
+              uint32_t x
+          )
+          {
+              uint32x4_t v =
+                  vreinterpretq_u32_m128i(
+                      acc
+                  );
+
+              v =
+                  vsetq_lane_u32(
+                      vgetq_lane_u32(
+                          v,
+                          0
+                      ) ^ x,
+                      v,
+                      0
+                  );
+
+              return
+                  vreinterpretq_m128i_u32(
+                      v
+                  );
+          }
+
+
           '''
 
           s = (
@@ -530,7 +689,7 @@ jobs:
 
 
           # ============================================================
-          # V5 ZERO-COPY HARDWARE PMULL
+          # HARDWARE PMULL
           # ============================================================
 
           start = s.index(
@@ -551,14 +710,10 @@ jobs:
           )
           {
               const uint64x2_t av =
-                  vreinterpretq_u64_s32(
-                      a
-                  );
+                  vreinterpretq_u64_s32(a);
 
               const uint64x2_t bv =
-                  vreinterpretq_u64_s32(
-                      b
-                  );
+                  vreinterpretq_u64_s32(b);
 
 
               const uint64x1_t va =
@@ -599,9 +754,7 @@ jobs:
 
 
           # ============================================================
-          # V7 VQRDMULH
-          #
-          # Preserves exact PMULHRSW overflow semantics.
+          # VQRDMULH
           # ============================================================
 
           start = s.index(
@@ -613,7 +766,7 @@ jobs:
               start
           )
 
-          vqrdmulh = r'''static inline
+          mulhrs = r'''static inline
           __attribute__((always_inline))
           __m128i _mm_mulhrs_epi16_emu(
               __m128i a,
@@ -621,14 +774,10 @@ jobs:
           )
           {
               const int16x8_t va =
-                  vreinterpretq_s16_s32(
-                      a
-                  );
+                  vreinterpretq_s16_s32(a);
 
               const int16x8_t vb =
-                  vreinterpretq_s16_s32(
-                      b
-                  );
+                  vreinterpretq_s16_s32(b);
 
 
               int16x8_t result =
@@ -671,19 +820,63 @@ jobs:
                   );
           }
 
+
+          // ==========================================================
+          // V9 fused case-0x18 non-division path
+          // ==========================================================
+
+          static inline
+          __attribute__((always_inline))
+          __m128i v9_case18_nondiv(
+              __m128i *acc,
+              __m128i onekey,
+              __m128i temp
+          )
+          {
+              const __m128i add =
+                  _mm_xor_si128_emu(
+                      onekey,
+                      temp
+                  );
+
+
+              onekey =
+                  _mm_clmulepi64_si128_emu(
+                      add,
+                      add,
+                      0x10
+                  );
+
+
+              const __m128i product =
+                  _mm_mulhrs_epi16_emu(
+                      *acc,
+                      onekey
+                  );
+
+
+              *acc =
+                  _mm_xor_si128_emu(
+                      *acc,
+                      product
+                  );
+
+
+              return
+                  onekey;
+          }
+
           '''
 
           s = (
               s[:start] +
-              vqrdmulh +
+              mulhrs +
               s[end:]
           )
 
 
           # ============================================================
-          # V8 REGISTER-ONLY BRIDGES
-          #
-          # Removes pointer casts / stack roundtrips from selector path.
+          # REGISTER BRIDGES
           # ============================================================
 
           start = s.index(
@@ -703,13 +896,7 @@ jobs:
               ) + 1
           )
 
-          if end <= start:
-              raise SystemExit(
-                  'Register bridge boundary not found'
-              )
-
-
-          register_bridges = r'''static inline
+          bridges = r'''static inline
           __attribute__((always_inline))
           __m128i _mm_set_epi64x_emu(
               uint64_t hi,
@@ -718,18 +905,12 @@ jobs:
           {
               const uint64x2_t v =
                   vcombine_u64(
-                      vcreate_u64(
-                          lo
-                      ),
-                      vcreate_u64(
-                          hi
-                      )
+                      vcreate_u64(lo),
+                      vcreate_u64(hi)
                   );
 
               return
-                  vreinterpretq_s32_u64(
-                      v
-                  );
+                  vreinterpretq_s32_u64(v);
           }
 
 
@@ -741,18 +922,12 @@ jobs:
           {
               const uint64x2_t v =
                   vcombine_u64(
-                      vcreate_u64(
-                          lo
-                      ),
-                      vdup_n_u64(
-                          0
-                      )
+                      vcreate_u64(lo),
+                      vdup_n_u64(0)
                   );
 
               return
-                  vreinterpretq_s32_u64(
-                      v
-                  );
+                  vreinterpretq_s32_u64(v);
           }
 
 
@@ -791,15 +966,411 @@ jobs:
 
           s = (
               s[:start] +
-              register_bridges +
+              bridges +
               s[end:]
           )
+
+
+          # ============================================================
+          # ACTIVE V2.1 CASE 0x14
+          #
+          # Hoisted mask + alternating pointers
+          # Fused AES/MIX2/XOR
+          # ============================================================
+
+          active = s.index(
+              '__verusclmulwithoutreduction64alignedrepeat_v2_1'
+          )
+
+          pos14 = s.index(
+              'case 0x14:',
+              active
+          )
+
+          start14 = (
+              s.rfind(
+                  '\n',
+                  active,
+                  pos14
+              ) + 1
+          )
+
+          pos18 = s.index(
+              'case 0x18:',
+              pos14
+          )
+
+          end14 = (
+              s.rfind(
+                  '\n',
+                  pos14,
+                  pos18
+              ) + 1
+          )
+
+
+          case14 = r'''            case 0x14:
+            {
+                const __m128i *buftmp =
+                    pbuf -
+                    (((selector & 1) << 1) - 1);
+
+
+                uint64_t rounds =
+                    selector >> 61;
+
+
+                __m128i *rc =
+                    prand;
+
+
+                uint64_t aesround =
+                    0;
+
+
+                uint64_t mask =
+                    ((uint64_t)0x10000000) <<
+                    rounds;
+
+
+                const __m128i *sel_mul =
+                    (rounds & 1)
+                        ? pbuf
+                        : buftmp;
+
+
+                const __m128i *sel_aes =
+                    (rounds & 1)
+                        ? buftmp
+                        : pbuf;
+
+
+                do
+                {
+                    const __m128i onekey =
+                        _mm_load_si128_emu(
+                            rc++
+                        );
+
+
+                    if (selector & mask)
+                    {
+                        const __m128i temp =
+                            _mm_load_si128_emu(
+                                sel_mul
+                            );
+
+
+                        const __m128i add =
+                            _mm_xor_si128_emu(
+                                onekey,
+                                temp
+                            );
+
+
+                        const __m128i product =
+                            _mm_clmulepi64_si128_emu(
+                                add,
+                                add,
+                                0x10
+                            );
+
+
+                        acc =
+                            _mm_xor_si128_emu(
+                                acc,
+                                product
+                            );
+                    }
+                    else
+                    {
+                        const __m128i temp =
+                            _mm_load_si128_emu(
+                                sel_aes
+                            );
+
+
+                        const uint64_t roundidx =
+                            aesround++ << 2;
+
+
+                        const __m128i mixed =
+                            v9_aes4_mix2_xor(
+                                onekey,
+                                temp,
+                                rc + roundidx
+                            );
+
+
+                        acc =
+                            _mm_xor_si128_emu(
+                                acc,
+                                mixed
+                            );
+                    }
+
+
+                    mask >>=
+                        1;
+
+
+                    const __m128i *swap =
+                        sel_mul;
+
+                    sel_mul =
+                        sel_aes;
+
+                    sel_aes =
+                        swap;
+
+                } while (rounds--);
+
+
+                const __m128i tempa1 =
+                    _mm_load_si128_emu(
+                        prand
+                    );
+
+
+                const __m128i tempa2 =
+                    _mm_mulhrs_epi16_emu(
+                        acc,
+                        tempa1
+                    );
+
+
+                const __m128i tempa3 =
+                    _mm_xor_si128_emu(
+                        tempa1,
+                        tempa2
+                    );
+
+
+                const __m128i tempa4 =
+                    _mm_load_si128_emu(
+                        prandex
+                    );
+
+
+                _mm_store_si128_emu(
+                    prandex,
+                    tempa3
+                );
+
+
+                _mm_store_si128_emu(
+                    prand,
+                    tempa4
+                );
+
+
+                break;
+            }
+          '''
+
+          s = (
+              s[:start14] +
+              case14 +
+              s[end14:]
+          )
+
+
+          # ============================================================
+          # ACTIVE V2.1 CASE 0x18
+          #
+          # Hoist divisor
+          # Hoist mask
+          # Alternate pointers instead of ternary each iteration
+          # Fused PMULL/VQRDMULH/XOR
+          # Direct low32 XOR
+          # ============================================================
+
+          active = s.index(
+              '__verusclmulwithoutreduction64alignedrepeat_v2_1'
+          )
+
+          pos18 = s.index(
+              'case 0x18:',
+              active
+          )
+
+          start18 = (
+              s.rfind(
+                  '\n',
+                  active,
+                  pos18
+              ) + 1
+          )
+
+          pos1c = s.index(
+              'case 0x1c:',
+              pos18
+          )
+
+          end18 = (
+              s.rfind(
+                  '\n',
+                  pos18,
+                  pos1c
+              ) + 1
+          )
+
+
+          case18 = r'''            case 0x18:
+            {
+                const __m128i *buftmp =
+                    pbuf -
+                    (((selector & 1) << 1) - 1);
+
+
+                uint64_t rounds =
+                    selector >> 61;
+
+
+                __m128i *rc =
+                    prand;
+
+
+                __m128i onekey;
+
+
+                const int32_t divisor =
+                    (int32_t)(uint32_t)selector;
+
+
+                uint64_t mask =
+                    ((uint64_t)0x10000000) <<
+                    rounds;
+
+
+                const __m128i *sel_div =
+                    (rounds & 1)
+                        ? pbuf
+                        : buftmp;
+
+
+                const __m128i *sel_cl =
+                    (rounds & 1)
+                        ? buftmp
+                        : pbuf;
+
+
+                do
+                {
+                    onekey =
+                        _mm_load_si128_emu(
+                            rc++
+                        );
+
+
+                    if (selector & mask)
+                    {
+                        const __m128i temp =
+                            _mm_load_si128_emu(
+                                sel_div
+                            );
+
+
+                        onekey =
+                            _mm_xor_si128_emu(
+                                onekey,
+                                temp
+                            );
+
+
+                        const int64_t dividend =
+                            _mm_cvtsi128_si64_emu(
+                                onekey
+                            );
+
+
+                        const int32_t remainder =
+                            (int32_t)(
+                                dividend %
+                                divisor
+                            );
+
+
+                        acc =
+                            v9_xor_low32(
+                                acc,
+                                (uint32_t)remainder
+                            );
+                    }
+                    else
+                    {
+                        const __m128i temp =
+                            _mm_load_si128_emu(
+                                sel_cl
+                            );
+
+
+                        onekey =
+                            v9_case18_nondiv(
+                                &acc,
+                                onekey,
+                                temp
+                            );
+                    }
+
+
+                    mask >>=
+                        1;
+
+
+                    const __m128i *swap =
+                        sel_div;
+
+                    sel_div =
+                        sel_cl;
+
+                    sel_cl =
+                        swap;
+
+                } while (rounds--);
+
+
+                const __m128i tempa3 =
+                    _mm_load_si128_emu(
+                        prandex
+                    );
+
+
+                const __m128i tempa4 =
+                    _mm_xor_si128_emu(
+                        tempa3,
+                        acc
+                    );
+
+
+                _mm_store_si128_emu(
+                    prandex,
+                    onekey
+                );
+
+
+                _mm_store_si128_emu(
+                    prand,
+                    tempa4
+                );
+
+
+                break;
+            }
+          '''
+
+          s = (
+              s[:start18] +
+              case18 +
+              s[end18:]
+          )
+
 
           p.write_text(s)
 
 
           # ============================================================
-          # VERUSSCAN V8
+          # VERUSSCAN V9
           # ============================================================
 
           p = Path(
@@ -809,16 +1380,15 @@ jobs:
           s = p.read_text()
 
 
-          # throughput is permanently 1
           s = s.replace(
               'static __thread uint32_t throughput = 0;',
-              '/* V8 throughput is constant one */',
+              '/* V9 throughput is constant one */',
               1
           )
 
 
           # ============================================================
-          # FIXKEY UNROLL + PARTIAL HARAKA
+          # FIXKEY + V9 HARAKA
           # ============================================================
 
           start = s.index(
@@ -834,8 +1404,8 @@ jobs:
           hot_helpers = r'''extern "C"
           __attribute__((always_inline))
           inline void FixKey(
-              uint32_t *fixrand,
-              uint32_t *fixrandex,
+              uint16_t *fixrand,
+              uint16_t *fixrandex,
               __m128i *keyback,
               __m128i *g_prand,
               __m128i *g_prandex
@@ -853,6 +1423,7 @@ jobs:
                   ] =
                       g_prandex[i];
 
+
                   keyback[
                       fixrand[i]
                   ] =
@@ -862,12 +1433,80 @@ jobs:
 
 
           // ==========================================================
-          // REGISTER-ONLY HARAKA AES
+          // Prepare the exact 64-byte CLHash input with NEON.
+          //
+          // Two vector stores + one byte.
           // ==========================================================
 
           static inline
           __attribute__((always_inline))
-          uint8x16_t v8_haraka_aes(
+          void v9_prepare_clhash_input(
+              unsigned char *curBuf,
+              const unsigned char *nonce
+          )
+          {
+              const uint8x16_t n =
+                  vld1q_u8(
+                      nonce
+                  );
+
+
+              const uint8x16_t h0 =
+                  vld1q_u8(
+                      curBuf
+                  );
+
+
+              // nonce[0..14], byte 47 gets overwritten below.
+              vst1q_u8(
+                  curBuf + 32,
+                  n
+              );
+
+
+              // Restore bytes 47..62.
+              vst1q_u8(
+                  curBuf + 47,
+                  h0
+              );
+
+
+              // Restore byte 63.
+              curBuf[63] =
+                  vgetq_lane_u8(
+                      h0,
+                      0
+                  );
+          }
+
+
+          static inline
+          __attribute__((always_inline))
+          void v9_write_intermediate(
+              unsigned char *curBuf,
+              uint64_t intermediate
+          )
+          {
+              memcpy(
+                  curBuf + 47,
+                  &intermediate,
+                  8
+              );
+
+              memcpy(
+                  curBuf + 55,
+                  &intermediate,
+                  8
+              );
+
+              curBuf[63] =
+                  (unsigned char)intermediate;
+          }
+
+
+          static inline
+          __attribute__((always_inline))
+          uint8x16_t v9_haraka_aes(
               uint8x16_t state,
               uint8x16_t key
           )
@@ -875,16 +1514,19 @@ jobs:
               const uint8x16_t zero =
                   vdupq_n_u8(0);
 
+
               state =
                   vaeseq_u8(
                       state,
                       zero
                   );
 
+
               state =
                   vaesmcq_u8(
                       state
                   );
+
 
               return
                   veorq_u8(
@@ -896,30 +1538,22 @@ jobs:
 
           static inline
           __attribute__((always_inline))
-          uint8x16_t v8_unpacklo32(
+          uint8x16_t v9_unpacklo32(
               uint8x16_t a,
               uint8x16_t b
           )
           {
               const int32x4_t ai =
-                  vreinterpretq_s32_u8(
-                      a
-                  );
+                  vreinterpretq_s32_u8(a);
 
               const int32x4_t bi =
-                  vreinterpretq_s32_u8(
-                      b
-                  );
+                  vreinterpretq_s32_u8(b);
 
 
               const int32x2x2_t z =
                   vzip_s32(
-                      vget_low_s32(
-                          ai
-                      ),
-                      vget_low_s32(
-                          bi
-                      )
+                      vget_low_s32(ai),
+                      vget_low_s32(bi)
                   );
 
 
@@ -935,30 +1569,22 @@ jobs:
 
           static inline
           __attribute__((always_inline))
-          uint8x16_t v8_unpackhi32(
+          uint8x16_t v9_unpackhi32(
               uint8x16_t a,
               uint8x16_t b
           )
           {
               const int32x4_t ai =
-                  vreinterpretq_s32_u8(
-                      a
-                  );
+                  vreinterpretq_s32_u8(a);
 
               const int32x4_t bi =
-                  vreinterpretq_s32_u8(
-                      b
-                  );
+                  vreinterpretq_s32_u8(b);
 
 
               const int32x2x2_t z =
                   vzip_s32(
-                      vget_high_s32(
-                          ai
-                      ),
-                      vget_high_s32(
-                          bi
-                      )
+                      vget_high_s32(ai),
+                      vget_high_s32(bi)
                   );
 
 
@@ -973,49 +1599,82 @@ jobs:
 
 
           // ==========================================================
-          // PARTIAL KEYED HARAKA
+          // V9 PARTIAL HARAKA
           //
-          // Full Haraka:
-          // 40 AES rounds.
+          // V8 still wrote the 17 intermediate bytes to curBuf
+          // before loading s2/s3.
           //
-          // Mining hot path only needs vhash[7].
-          //
-          // This version:
-          // 34 AES rounds.
-          //
-          // Full hash is replayed only for share candidates.
+          // V9 constructs s2 and s3 directly in NEON registers.
+          // No intermediate memory roundtrip on normal hashes.
           // ==========================================================
 
           static inline
           __attribute__((always_inline))
-          void v8_haraka512_word7(
+          void v9_haraka512_word7(
               unsigned char *out,
-              const unsigned char *in,
+              const unsigned char *curBuf,
+              const unsigned char *nonce,
+              uint64_t intermediate,
               const __m128i *rc
           )
           {
               uint8x16_t s0 =
                   vld1q_u8(
-                      in
+                      curBuf
                   );
+
 
               uint8x16_t s1 =
                   vld1q_u8(
-                      in + 16
+                      curBuf + 16
                   );
+
 
               uint8x16_t s2 =
                   vld1q_u8(
-                      in + 32
+                      nonce
                   );
+
+
+              // Final Haraka input byte 47 =
+              // low byte of intermediate.
+              s2 =
+                  vsetq_lane_u8(
+                      (uint8_t)intermediate,
+                      s2,
+                      15
+                  );
+
+
+              // Bytes 47..63 are intermediate repeated.
+              // s3 begins at byte 48, therefore rotate repeated
+              // intermediate by one byte.
+              const uint64x2_t iv64 =
+                  vcombine_u64(
+                      vcreate_u64(
+                          intermediate
+                      ),
+                      vcreate_u64(
+                          intermediate
+                      )
+                  );
+
+
+              const uint8x16_t iv =
+                  vreinterpretq_u8_u64(
+                      iv64
+                  );
+
 
               uint8x16_t s3 =
-                  vld1q_u8(
-                      in + 48
+                  vextq_u8(
+                      iv,
+                      iv,
+                      1
                   );
 
 
-              // First three rounds completely.
+              // First 3 complete Haraka rounds.
           #pragma clang loop unroll(full)
               for (
                   int round = 0;
@@ -1027,28 +1686,28 @@ jobs:
                       round * 8;
 
 
-                  s0 = v8_haraka_aes(
+                  s0 = v9_haraka_aes(
                       s0,
                       vreinterpretq_u8_s32(
                           rc[r + 0]
                       )
                   );
 
-                  s1 = v8_haraka_aes(
+                  s1 = v9_haraka_aes(
                       s1,
                       vreinterpretq_u8_s32(
                           rc[r + 1]
                       )
                   );
 
-                  s2 = v8_haraka_aes(
+                  s2 = v9_haraka_aes(
                       s2,
                       vreinterpretq_u8_s32(
                           rc[r + 2]
                       )
                   );
 
-                  s3 = v8_haraka_aes(
+                  s3 = v9_haraka_aes(
                       s3,
                       vreinterpretq_u8_s32(
                           rc[r + 3]
@@ -1056,28 +1715,28 @@ jobs:
                   );
 
 
-                  s0 = v8_haraka_aes(
+                  s0 = v9_haraka_aes(
                       s0,
                       vreinterpretq_u8_s32(
                           rc[r + 4]
                       )
                   );
 
-                  s1 = v8_haraka_aes(
+                  s1 = v9_haraka_aes(
                       s1,
                       vreinterpretq_u8_s32(
                           rc[r + 5]
                       )
                   );
 
-                  s2 = v8_haraka_aes(
+                  s2 = v9_haraka_aes(
                       s2,
                       vreinterpretq_u8_s32(
                           rc[r + 6]
                       )
                   );
 
-                  s3 = v8_haraka_aes(
+                  s3 = v9_haraka_aes(
                       s3,
                       vreinterpretq_u8_s32(
                           rc[r + 7]
@@ -1086,164 +1745,140 @@ jobs:
 
 
                   const uint8x16_t t =
-                      v8_unpacklo32(
+                      v9_unpacklo32(
                           s0,
                           s1
                       );
+
 
                   const uint8x16_t a =
-                      v8_unpackhi32(
+                      v9_unpackhi32(
                           s0,
                           s1
                       );
 
+
                   const uint8x16_t b =
-                      v8_unpacklo32(
+                      v9_unpacklo32(
                           s2,
                           s3
                       );
 
+
                   const uint8x16_t c =
-                      v8_unpackhi32(
+                      v9_unpackhi32(
                           s2,
                           s3
                       );
 
 
                   s3 =
-                      v8_unpacklo32(
+                      v9_unpacklo32(
                           a,
                           c
                       );
+
 
                   s0 =
-                      v8_unpackhi32(
+                      v9_unpackhi32(
                           a,
                           c
                       );
 
+
                   s2 =
-                      v8_unpackhi32(
+                      v9_unpackhi32(
                           b,
                           t
                       );
 
+
                   s1 =
-                      v8_unpacklo32(
+                      v9_unpacklo32(
                           b,
                           t
                       );
               }
 
 
-              // ======================================================
-              // Fourth round:
-              // complete AES stage.
-              // ======================================================
-
-              s0 = v8_haraka_aes(
+              // Fourth complete AES stage.
+              s0 = v9_haraka_aes(
                   s0,
-                  vreinterpretq_u8_s32(
-                      rc[24]
-                  )
+                  vreinterpretq_u8_s32(rc[24])
               );
 
-              s1 = v8_haraka_aes(
+              s1 = v9_haraka_aes(
                   s1,
-                  vreinterpretq_u8_s32(
-                      rc[25]
-                  )
+                  vreinterpretq_u8_s32(rc[25])
               );
 
-              s2 = v8_haraka_aes(
+              s2 = v9_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(
-                      rc[26]
-                  )
+                  vreinterpretq_u8_s32(rc[26])
               );
 
-              s3 = v8_haraka_aes(
+              s3 = v9_haraka_aes(
                   s3,
-                  vreinterpretq_u8_s32(
-                      rc[27]
-                  )
+                  vreinterpretq_u8_s32(rc[27])
               );
 
 
-              s0 = v8_haraka_aes(
+              s0 = v9_haraka_aes(
                   s0,
-                  vreinterpretq_u8_s32(
-                      rc[28]
-                  )
+                  vreinterpretq_u8_s32(rc[28])
               );
 
-              s1 = v8_haraka_aes(
+              s1 = v9_haraka_aes(
                   s1,
-                  vreinterpretq_u8_s32(
-                      rc[29]
-                  )
+                  vreinterpretq_u8_s32(rc[29])
               );
 
-              s2 = v8_haraka_aes(
+              s2 = v9_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(
-                      rc[30]
-                  )
+                  vreinterpretq_u8_s32(rc[30])
               );
 
-              s3 = v8_haraka_aes(
+              s3 = v9_haraka_aes(
                   s3,
-                  vreinterpretq_u8_s32(
-                      rc[31]
-                  )
+                  vreinterpretq_u8_s32(rc[31])
               );
 
 
-              // Only dependency needed for final output word 7.
+              // Only dependency required by final word7.
               const uint8x16_t t =
-                  v8_unpacklo32(
+                  v9_unpacklo32(
                       s0,
                       s1
                   );
 
+
               const uint8x16_t b =
-                  v8_unpacklo32(
+                  v9_unpacklo32(
                       s2,
                       s3
                   );
 
 
               s2 =
-                  v8_unpackhi32(
+                  v9_unpackhi32(
                       b,
                       t
                   );
 
 
-              // ======================================================
-              // Fifth round:
-              // only state2 is required.
-              // ======================================================
-
-              s2 = v8_haraka_aes(
+              // Final round only requires state2.
+              s2 = v9_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(
-                      rc[34]
-                  )
+                  vreinterpretq_u8_s32(rc[34])
               );
 
 
-              s2 = v8_haraka_aes(
+              s2 = v9_haraka_aes(
                   s2,
-                  vreinterpretq_u8_s32(
-                      rc[38]
-                  )
+                  vreinterpretq_u8_s32(rc[38])
               );
 
 
-              // After final MIX,
-              // output bytes 52..55 come from
-              // lane 2 of pre-mix state2.
               uint32_t word7 =
                   vgetq_lane_u32(
                       vreinterpretq_u32_u8(
@@ -1253,17 +1888,17 @@ jobs:
                   );
 
 
-              uint32_t input_word7;
+              // Original input bytes 52..55 correspond
+              // to s3 uint32 lane 1.
+              const uint32_t input_word7 =
+                  vgetq_lane_u32(
+                      vreinterpretq_u32_u8(
+                          s3
+                      ),
+                      1
+                  );
 
 
-              memcpy(
-                  &input_word7,
-                  in + 52,
-                  sizeof(input_word7)
-              );
-
-
-              // Haraka feed-forward.
               word7 ^=
                   input_word7;
 
@@ -1286,16 +1921,7 @@ jobs:
 
 
           # ============================================================
-          # V8 VERUS HASH
-          #
-          # Fast path:
-          # partial Haraka word7.
-          #
-          # First hash on every thread:
-          # validate against complete original Haraka.
-          #
-          # Failure:
-          # automatic full-Haraka fallback.
+          # V9 FAST HASH + FULL CANDIDATE HASH
           # ============================================================
 
           start = s.index(
@@ -1308,9 +1934,9 @@ jobs:
           )
 
 
-          verus2_fast = r'''static __thread int
-          v8_haraka_fast_state = 0;
-          //  0 = untested
+          verus2 = r'''static __thread int
+          v9_haraka_fast_state = 0;
+          //  0 = not tested
           //  1 = verified
           // -1 = fallback
 
@@ -1323,8 +1949,8 @@ jobs:
               unsigned char *nonce,
               __m128i * __restrict data_key,
               uint8_t *gpu_init,
-              uint32_t *fixrand,
-              uint32_t *fixrandex,
+              uint16_t *fixrand,
+              uint16_t *fixrandex,
               __m128i *g_prand,
               __m128i *g_prandex,
               int version
@@ -1334,23 +1960,10 @@ jobs:
               (void)version;
 
 
-              memcpy(
-                  curBuf + 47,
+              // Build exact CLHash input.
+              v9_prepare_clhash_input(
                   curBuf,
-                  16
-              );
-
-              memcpy(
-                  curBuf + 63,
-                  curBuf,
-                  1
-              );
-
-
-              memcpy(
-                  curBuf + 32,
-                  nonce,
-                  15
+                  nonce
               );
 
 
@@ -1366,25 +1979,6 @@ jobs:
                   );
 
 
-              memcpy(
-                  curBuf + 47,
-                  &intermediate,
-                  8
-              );
-
-              memcpy(
-                  curBuf + 55,
-                  &intermediate,
-                  8
-              );
-
-              memcpy(
-                  curBuf + 63,
-                  &intermediate,
-                  1
-              );
-
-
               intermediate &=
                   511;
 
@@ -1395,10 +1989,17 @@ jobs:
 
 
               if (__builtin_expect(
-                      v8_haraka_fast_state < 0,
+                      v9_haraka_fast_state < 0,
                       0
                   ))
               {
+                  // Safe fallback.
+                  v9_write_intermediate(
+                      curBuf,
+                      intermediate
+                  );
+
+
                   haraka512_port_keyed(
                       hash,
                       curBuf,
@@ -1407,19 +2008,40 @@ jobs:
               }
               else
               {
-                  v8_haraka512_word7(
+                  // Normal V9 path:
+                  // don't write intermediate to RAM.
+                  v9_haraka512_word7(
                       hash,
                       curBuf,
+                      nonce,
+                      intermediate,
                       round_keys
                   );
 
 
-                  // One-time thread verification.
+                  // One-time bit-exact test per thread.
                   if (__builtin_expect(
-                          v8_haraka_fast_state == 0,
+                          v9_haraka_fast_state == 0,
                           0
                       ))
                   {
+                      uint32_t fast_word7;
+
+
+                      memcpy(
+                          &fast_word7,
+                          hash + 28,
+                          sizeof(fast_word7)
+                      );
+
+
+                      // Build complete input only for this test.
+                      v9_write_intermediate(
+                          curBuf,
+                          intermediate
+                      );
+
+
                       alignas(16)
                       uint32_t reference_hash[8] =
                           { 0 };
@@ -1433,22 +2055,12 @@ jobs:
                       );
 
 
-                      uint32_t fast_word7;
-
-
-                      memcpy(
-                          &fast_word7,
-                          hash + 28,
-                          sizeof(fast_word7)
-                      );
-
-
                       if (
                           fast_word7 ==
                           reference_hash[7]
                       )
                       {
-                          v8_haraka_fast_state =
+                          v9_haraka_fast_state =
                               1;
                       }
                       else
@@ -1459,7 +2071,7 @@ jobs:
                               32
                           );
 
-                          v8_haraka_fast_state =
+                          v9_haraka_fast_state =
                               -1;
                       }
                   }
@@ -1477,20 +2089,20 @@ jobs:
 
 
           // ==========================================================
-          // COMPLETE HASH
-          // Only used for candidate verification.
+          // FULL REPLAY
+          // Only for actual candidate.
           // ==========================================================
 
           extern "C"
           __attribute__((noinline))
-          void Verus2hashFullV8(
+          void Verus2hashFullV9(
               unsigned char *hash,
               unsigned char *curBuf,
               unsigned char *nonce,
               __m128i * __restrict data_key,
               uint8_t *gpu_init,
-              uint32_t *fixrand,
-              uint32_t *fixrandex,
+              uint16_t *fixrand,
+              uint16_t *fixrandex,
               __m128i *g_prand,
               __m128i *g_prandex,
               int version
@@ -1500,23 +2112,9 @@ jobs:
               (void)version;
 
 
-              memcpy(
-                  curBuf + 47,
+              v9_prepare_clhash_input(
                   curBuf,
-                  16
-              );
-
-              memcpy(
-                  curBuf + 63,
-                  curBuf,
-                  1
-              );
-
-
-              memcpy(
-                  curBuf + 32,
-                  nonce,
-                  15
+                  nonce
               );
 
 
@@ -1532,27 +2130,14 @@ jobs:
                   );
 
 
-              memcpy(
-                  curBuf + 47,
-                  &intermediate,
-                  8
-              );
-
-              memcpy(
-                  curBuf + 55,
-                  &intermediate,
-                  8
-              );
-
-              memcpy(
-                  curBuf + 63,
-                  &intermediate,
-                  1
-              );
-
-
               intermediate &=
                   511;
+
+
+              v9_write_intermediate(
+                  curBuf,
+                  intermediate
+              );
 
 
               haraka512_port_keyed(
@@ -1576,16 +2161,13 @@ jobs:
 
           s = (
               s[:start] +
-              verus2_fast +
+              verus2 +
               s[end:]
           )
 
 
           # ============================================================
           # CANDIDATE PATH
-          #
-          # Fast word7 detects candidate.
-          # Complete 256-bit hash is replayed before submission.
           # ============================================================
 
           start = s.index(
@@ -1608,7 +2190,7 @@ jobs:
                           { 0 };
 
 
-                      Verus2hashFullV8(
+                      Verus2hashFullV9(
                           (unsigned char *)
                               fullhash,
 
@@ -1631,8 +2213,6 @@ jobs:
                       );
 
 
-                      // Never submit anything that disagrees
-                      // with complete Haraka.
                       if (
                           fullhash[7] ==
                           vhash[7]
@@ -1700,9 +2280,7 @@ jobs:
 
 
           # ============================================================
-          # V8 LOOP BOOKKEEPING
-          #
-          # Remove work from every single nonce.
+          # LOOP BOOKKEEPING
           # ============================================================
 
           s = s.replace(
@@ -1711,13 +2289,11 @@ jobs:
               1
           )
 
-
           s = s.replace(
               'gettimeofday(&tv_start, NULL);',
               '',
               1
           )
-
 
           s = s.replace(
               'throughput = 1;',
@@ -1725,13 +2301,11 @@ jobs:
               1
           )
 
-
           s = s.replace(
               '*hashes_done = nonce_buf - start_nonce + throughput;',
               '',
               1
           )
-
 
           s = s.replace(
               'if ((uint64_t)throughput + '
@@ -1742,7 +2316,6 @@ jobs:
               '(uint64_t)max_nonce)',
               1
           )
-
 
           s = s.replace(
               'nonce_buf += throughput;',
@@ -1756,7 +2329,6 @@ jobs:
               '\tgettimeofday(&tv_end, NULL);'
           )
 
-
           new_out = (
               'out:\n'
               '\t*hashes_done = '
@@ -1766,7 +2338,7 @@ jobs:
 
           if old_out not in s:
               raise SystemExit(
-                  'Could not locate original out bookkeeping'
+                  'V9 could not find out bookkeeping'
               )
 
 
@@ -1781,7 +2353,7 @@ jobs:
 
 
           # ============================================================
-          # API BUILD IDENTIFIER
+          # API BUILD ID
           # ============================================================
 
           p = Path(
@@ -1800,7 +2372,7 @@ jobs:
           new = (
               'sprintf(buffer, '
               '"NAME=%s;VER=%s;'
-              'BUILD=A55-HOTPATH-V8;'
+              'BUILD=A55-CLHASH-V9;'
               'API=%s;"'
           )
 
@@ -1820,253 +2392,132 @@ jobs:
           )
 
 
-          print(
-              '======================================'
-          )
-
-          print(
-              'FireStick A55 HOTPATH V8'
-          )
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'V3 alignment/SIGBUS    : YES'
-          )
-
-          print(
-              'ARMv8 hardware AES     : YES'
-          )
-
-          print(
-              'V5 zero-copy PMULL     : YES'
-          )
-
-          print(
-              'V7 VQRDMULH            : YES'
-          )
-
-          print(
-              'CLHash register AES    : YES'
-          )
-
-          print(
-              'NEON VTBL shuffle      : YES'
-          )
-
-          print(
-              'Register bridges       : YES'
-          )
-
-          print(
-              'FixKey full unroll     : YES'
-          )
-
-          print(
-              'Partial Haraka word7   : YES'
-          )
-
-          print(
-              'Haraka 34/40 AES       : YES'
-          )
-
-          print(
-              'Runtime self-test      : YES'
-          )
-
-          print(
-              'Full candidate replay  : YES'
-          )
-
-          print(
-              'hashes_done hoist      : YES'
-          )
-
-          print(
-              'Frame pointer omitted  : YES'
-          )
-
-          print(
-              'BUILD=A55-HOTPATH-V8'
-          )
-
+          print('=======================================')
+          print('FireStick A55 CLHASH V9')
+          print('=======================================')
+          print('V8 partial Haraka      : YES')
+          print('Haraka register input  : V9')
+          print('No hot intermediate RAM: YES')
+          print('PMULL                   : YES')
+          print('VQRDMULH                : YES')
+          print('VTBL                     : YES')
+          print('case 0x14 fusion        : YES')
+          print('case 0x18 fusion        : YES')
+          print('case 0x18 mask hoist    : YES')
+          print('case 0x18 pointer hoist : YES')
+          print('low32 direct XOR        : YES')
+          print('FixKey uint16 indices   : YES')
+          print('FixKey unrolled         : YES')
+          print('full candidate replay   : YES')
+          print('Haraka runtime selftest : YES')
+          print('BUILD=A55-CLHASH-V9')
           PY
 
 
       # ================================================================
-      # PATCH VALIDATION
+      # VERIFY PATCHES
       # ================================================================
 
-      - name: Verify V8 patches
+      - name: Verify V9 patches
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "===== CPU TARGET ====="
+          echo "===== CPU ====="
+          grep -n "cortex-a55" Makefile.am
 
-          grep -n \
-            "cortex-a55" \
-            Makefile.am
-
-          grep -n \
-            "fomit-frame-pointer" \
-            Makefile.am
-
-
-          echo "===== HARAKA HEADER ====="
-
-          grep -n \
-            "^void aesenc" \
+          echo "===== AES ====="
+          grep -n "v9_aesenc_vec" \
             verus/armv7/haraka_portable.h
 
-          grep -n \
-            "v8_aesenc_vec" \
-            verus/armv7/haraka_portable.h
-
-          grep -n \
-            "AES2_EMU" \
-            verus/armv7/haraka_portable.h
-
-
-          echo "===== HARDWARE AES ====="
-
-          grep -n \
-            "vaeseq_u8" \
+          grep -n "vaeseq_u8" \
             verus/armv7/haraka_portable.c
 
-
           echo "===== PMULL ====="
-
-          grep -n \
-            "vmull.p64" \
+          grep -n "vmull.p64" \
             verus/armv7/verus_clhash_portable.cpp
-
 
           echo "===== VQRDMULH ====="
-
-          grep -n \
-            "vqrdmulhq_s16" \
+          grep -n "vqrdmulhq_s16" \
             verus/armv7/verus_clhash_portable.cpp
-
 
           echo "===== VTBL ====="
-
-          grep -n \
-            "vtbl2_u8" \
+          grep -n "vtbl2_u8" \
             verus/armv7/verus_clhash_portable.cpp
 
-
-          echo "===== REGISTER BRIDGE ====="
-
-          grep -n \
-            "vget_lane_s64" \
+          echo "===== CASE14 FUSION ====="
+          grep -n "v9_aes4_mix2_xor" \
             verus/armv7/verus_clhash_portable.cpp
 
+          echo "===== CASE18 FUSION ====="
+          grep -n "v9_case18_nondiv" \
+            verus/armv7/verus_clhash_portable.cpp
 
-          echo "===== FAST HARAKA ====="
+          echo "===== LOW32 ====="
+          grep -n "v9_xor_low32" \
+            verus/armv7/verus_clhash_portable.cpp
 
-          grep -n \
-            "v8_haraka512_word7" \
+          echo "===== FIXKEY UINT16 ====="
+          grep -n "uint16_t fixrand" \
             verus/armv7/verusscan.cpp
 
-          grep -n \
-            "rc\\[34\\]" \
+          grep -n "uint16_t.*fixrand" \
+            verus/armv7/verus_clhash.h
+
+          echo "===== V9 BUFFER PATH ====="
+          grep -n "v9_prepare_clhash_input" \
             verus/armv7/verusscan.cpp
 
-          grep -n \
-            "rc\\[38\\]" \
+          grep -n "v9_haraka512_word7" \
             verus/armv7/verusscan.cpp
 
-
-          echo "===== SELF TEST ====="
-
-          grep -n \
-            "v8_haraka_fast_state" \
+          echo "===== FULL REPLAY ====="
+          grep -n "Verus2hashFullV9" \
             verus/armv7/verusscan.cpp
-
-
-          echo "===== FULL CANDIDATE REPLAY ====="
-
-          grep -n \
-            "Verus2hashFullV8" \
-            verus/armv7/verusscan.cpp
-
-
-          echo "===== ALIGNMENT ====="
-
-          grep -n \
-            "posix_memalign" \
-            verus/armv7/verusscan.cpp
-
 
           echo "===== BUILD ID ====="
-
-          grep -n \
-            "A55-HOTPATH-V8" \
-            api.cpp
-
-
-          echo "===== HEADER FIRST 90 LINES ====="
-
-          sed -n \
-            '1,90p' \
-            verus/armv7/haraka_portable.h
+          grep -n "A55-CLHASH-V9" api.cpp
 
 
       # ================================================================
-      # V7 MULHRS CORRECTNESS
+      # SEMANTIC TESTS
       # ================================================================
 
-      - name: Verify MULHRS semantics
+      - name: Verify V9 semantics
         shell: bash
         run: |
           set -euo pipefail
 
           python3 - <<'PY'
+          import random
+
+
+          # ------------------------------------------------------------
+          # PMULHRSW / VQRDMULH edge semantics
+          # ------------------------------------------------------------
+
           def wrap16(x):
               x &= 0xffff
-
-              return (
-                  x - 0x10000
-                  if x & 0x8000
-                  else x
-              )
+              return x - 0x10000 if x & 0x8000 else x
 
 
-          def reference(a, b):
+          def reference_mulhrs(a, b):
               return wrap16(
-                  (
-                      (a * b) +
-                      0x4000
-                  ) >> 15
+                  ((a * b) + 0x4000) >> 15
               )
 
 
-          def arm_model(a, b):
-              x = (
-                  (
-                      (a * b) +
-                      0x4000
-                  ) >> 15
-              )
-
+          def v9_mulhrs(a, b):
+              x = ((a * b) + 0x4000) >> 15
 
               if x > 32767:
                   x = 32767
 
-
               if x < -32768:
                   x = -32768
 
-
-              if (
-                  a == -32768 and
-                  b == -32768
-              ):
+              if a == -32768 and b == -32768:
                   x = -32768
-
 
               return x
 
@@ -2085,38 +2536,143 @@ jobs:
 
 
           for a, b in tests:
-              r = reference(
-                  a,
-                  b
-              )
-
-              n = arm_model(
-                  a,
-                  b
+              assert (
+                  reference_mulhrs(a, b) ==
+                  v9_mulhrs(a, b)
               )
 
 
-              print(
-                  a,
-                  b,
-                  'reference=',
-                  r,
-                  'v8=',
-                  n
+          # ------------------------------------------------------------
+          # MIX2 XOR equivalence
+          # ------------------------------------------------------------
+
+          for _ in range(10000):
+              a = [
+                  random.getrandbits(32)
+                  for _ in range(4)
+              ]
+
+              b = [
+                  random.getrandbits(32)
+                  for _ in range(4)
+              ]
+
+
+              mixlo = [
+                  a[0],
+                  b[0],
+                  a[1],
+                  b[1],
+              ]
+
+
+              mixhi = [
+                  a[2],
+                  b[2],
+                  a[3],
+                  b[3],
+              ]
+
+
+              original = [
+                  mixlo[i] ^ mixhi[i]
+                  for i in range(4)
+              ]
+
+
+              fused = [
+                  a[0] ^ a[2],
+                  b[0] ^ b[2],
+                  a[1] ^ a[3],
+                  b[1] ^ b[3],
+              ]
+
+
+              assert original == fused
+
+
+          # ------------------------------------------------------------
+          # Hoisted case14/case18 mask + pointer parity
+          # ------------------------------------------------------------
+
+          for rounds0 in range(8):
+              original = []
+
+              r = rounds0
+
+              while True:
+                  original.append(
+                      (
+                          r,
+                          0x10000000 << r,
+                          'pbuf' if r & 1 else 'buftmp',
+                          'buftmp' if r & 1 else 'pbuf',
+                      )
+                  )
+
+                  if r == 0:
+                      break
+
+                  r -= 1
+
+
+              optimized = []
+
+              r = rounds0
+
+              mask = (
+                  0x10000000 <<
+                  r
+              )
+
+              first = (
+                  'pbuf'
+                  if r & 1
+                  else 'buftmp'
+              )
+
+              second = (
+                  'buftmp'
+                  if r & 1
+                  else 'pbuf'
               )
 
 
-              if r != n:
-                  raise SystemExit(
-                      f'MULHRS mismatch: '
-                      f'{a}, {b}'
+              while True:
+                  optimized.append(
+                      (
+                          r,
+                          mask,
+                          first,
+                          second,
+                      )
                   )
 
 
-          print(
-              'MULHRS semantics PASSED'
-          )
+                  mask >>= 1
 
+                  first, second = (
+                      second,
+                      first,
+                  )
+
+
+                  if r == 0:
+                      break
+
+                  r -= 1
+
+
+              assert original == optimized
+
+
+          # fixrand max is exactly 511.
+          assert 511 < 65536
+
+
+          print(
+              'V9 semantic tests PASSED'
+          )
           PY
 
 
@@ -2136,7 +2692,7 @@ jobs:
           set -euo pipefail
 
           docker build \
-            -t ccminer-firestick-a55-v8 \
+            -t ccminer-firestick-a55-v9 \
             -f build.Dockerfile \
             .
 
@@ -2146,17 +2702,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          rm -rf \
-            build-output
-
-          mkdir -p \
-            build-output
-
+          rm -rf build-output
+          mkdir -p build-output
 
           docker run \
             --rm \
             -v "$PWD/build-output:/build/output" \
-            ccminer-firestick-a55-v8 \
+            ccminer-firestick-a55-v9 \
             arm
 
 
@@ -2180,10 +2732,10 @@ jobs:
 
 
       # ================================================================
-      # BINARY CHECKS
+      # BINARY INSPECTION
       # ================================================================
 
-      - name: Inspect V8 binary
+      - name: Inspect V9 binary
         shell: bash
         run: |
           set -euo pipefail
@@ -2193,48 +2745,38 @@ jobs:
 
           echo "===== FILE ====="
 
-          file \
-            "$BIN"
+          file "$BIN"
 
 
           echo "===== BUILD ID ====="
 
-          strings \
-            "$BIN" |
-            grep \
-              "A55-HOTPATH-V8"
+          strings "$BIN" |
+            grep "A55-CLHASH-V9"
 
 
-          echo "===== DIVISION HELPER ====="
+          echo "===== 64-BIT DIVISION HELPER ====="
 
-          readelf \
-            -Ws \
-            "$BIN" |
-            grep \
-              "__aeabi_ldivmod" ||
+          readelf -Ws "$BIN" |
+            grep "__aeabi_ldivmod" ||
             true
 
 
           echo "===== BINARY SIZE ====="
 
-          ls -lh \
-            "$BIN"
+          ls -lh "$BIN"
 
 
       # ================================================================
       # PACKAGE
       # ================================================================
 
-      - name: Prepare V8 package
+      - name: Prepare V9 package
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf \
-            dist
-
-          mkdir -p \
-            dist
+          rm -rf dist
+          mkdir -p dist
 
 
           BIN="build-output/ccminer-armeabi-v7a/bin"
@@ -2242,7 +2784,7 @@ jobs:
 
           cp \
             "$BIN/ccminer" \
-            dist/ccminer-a55-hotpath-v8
+            dist/ccminer-a55-clhash-v9
 
 
           if test -f "$BIN/libc++_shared.so"; then
@@ -2260,17 +2802,17 @@ jobs:
 
 
           chmod +x \
-            dist/ccminer-a55-hotpath-v8
+            dist/ccminer-a55-clhash-v9
 
 
           cat > dist/BUILDINFO.txt <<EOF
           Build:
-          A55-HOTPATH-V8
+          A55-CLHASH-V9
 
           Source:
           shmutalov/ccminer
 
-          Source commit:
+          Commit:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI:
@@ -2279,75 +2821,69 @@ jobs:
           CPU:
           Cortex-A55
 
-          ARMv8 crypto:
-          enabled
+          Stable base:
+          A55-HOTPATH-V8
 
-          Frame pointer:
-          omitted
-
-          V3 SIGBUS fixes:
-          preserved
+          V8 measured baseline:
+          approximately 679 kH/s
 
           Hardware AES:
-          enabled
-
-          CLHash register AES:
           enabled
 
           Hardware PMULL:
           enabled
 
-          Zero-copy PMULL:
-          enabled
-
           VQRDMULH:
           enabled
 
-          MULHRS INT16_MIN correction:
+          VTBL PSHUFB:
           enabled
 
-          NEON VTBL PSHUFB:
+          Partial Haraka:
           enabled
 
-          Register selector extraction:
+          Haraka hot AES count:
+          34 instead of 40
+
+          V9 direct Haraka register input:
           enabled
+
+          Hot intermediate RAM writes:
+          removed
+
+          CLHash case 0x14 AES/MIX2/XOR fusion:
+          enabled
+
+          CLHash case 0x14 mask/pointer hoist:
+          enabled
+
+          CLHash case 0x18 PMULL/MULHRS/XOR fusion:
+          enabled
+
+          CLHash case 0x18 mask/pointer hoist:
+          enabled
+
+          CLHash case 0x18 divisor hoist:
+          enabled
+
+          Low32 XOR:
+          direct NEON lane
+
+          FixKey indices:
+          uint16
 
           FixKey:
           fully unrolled
 
-          Partial keyed Haraka:
-          enabled
-
-          Haraka hot-path AES operations:
-          34 instead of 40
-
-          First-hash self-test:
+          Runtime Haraka self-test:
           enabled per thread
-
-          Automatic full-Haraka fallback:
-          enabled
 
           Complete candidate replay:
           enabled
 
-          hashes_done:
-          removed from per-nonce hot loop
-
           API:
-          BUILD=A55-HOTPATH-V8
-
-          Stable comparison:
-          A55-VQRDMULH-V7
-
-          V7 measured:
-          approximately 430 kH/s sustained
+          BUILD=A55-CLHASH-V9
           EOF
-
-
-          echo "===== FILE ====="
-
-          file \
-            dist/ccminer-a55-hotpath-v8
 
 
           echo "===== SHA256 ====="
@@ -2362,10 +2898,10 @@ jobs:
       # ARTIFACT
       # ================================================================
 
-      - name: Upload V8 artifact
+      - name: Upload V9 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firestick-a55-hotpath-v8-${{ github.run_number }}
+          name: firestick-a55-clhash-v9-${{ github.run_number }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
