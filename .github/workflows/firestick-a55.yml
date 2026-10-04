@@ -13,7 +13,7 @@ jobs:
     steps:
 
       # ==============================================================
-      # HISTORICAL BASES
+      # EXACT HISTORICAL BASES
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -32,6 +32,14 @@ jobs:
           path: v10-base
 
 
+      - name: Checkout V11 run 30 source workflow
+        uses: actions/checkout@v4
+        with:
+          repository: jeanchristopheb1999-prog/firestick-a55-build
+          ref: 7f92ff0f8788f54781704ce8414915584450bd78
+          path: v11-base
+
+
       - name: Checkout pinned ccminer source
         uses: actions/checkout@v4
         with:
@@ -41,10 +49,10 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY EXACT V10
+      # REPLAY V10 + V11, FIXING ONLY THE FAILED STORE DETECTOR
       # ==============================================================
 
-      - name: Replay exact V10 champion
+      - name: Apply corrected HOTCORE V11
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +65,7 @@ jobs:
 
 
           workflow = Path(
-              '../v10-base/.github/workflows/firestick-a55.yml'
+              '../v11-base/.github/workflows/firestick-a55.yml'
           ).read_text()
 
 
@@ -74,14 +82,17 @@ jobs:
                   start = i + 1
                   end = None
 
+
                   for j in range(start, len(lines)):
 
                       if lines[j].strip() == 'PY':
+
                           end = j
                           break
 
 
                   if end is None:
+
                       raise SystemExit(
                           'Unterminated Python block'
                       )
@@ -99,33 +110,253 @@ jobs:
                   i = end + 1
 
               else:
+
                   i += 1
 
 
-          if len(blocks) < 2:
+          if len(blocks) < 3:
+
               raise SystemExit(
-                  'Could not recover V10 patch blocks'
+                  'Expected 3 V11 Python blocks, found '
+                  + str(len(blocks))
               )
 
 
-          for index in range(2):
+          # ==========================================================
+          # BLOCK 1:
+          # exact V10 replay from successful V11 #30
+          # ==========================================================
 
-              print(
-                  'Replaying V10 block',
-                  index + 1
+          print(
+              '======================================'
+          )
+
+          print(
+              'REPLAY EXACT V10'
+          )
+
+          print(
+              '======================================'
+          )
+
+
+          exec(
+              compile(
+                  blocks[0],
+                  'v11-replay-v10.py',
+                  'exec'
+              ),
+              {
+                  '__name__': '__main__',
+              }
+          )
+
+
+          # ==========================================================
+          # BLOCK 2:
+          # V11 patch from run #30
+          #
+          # Run #30 reached only the duplicate-store detector.
+          # Replace that fragile regex section with robust
+          # last-occurrence removal.
+          # ==========================================================
+
+          patch = blocks[1]
+
+
+          section_start = patch.index(
+              '# ==========================================================\n'
+              '# REMOVE DUPLICATE FIXRAND STORES'
+          )
+
+
+          section_end = patch.index(
+              '# ==========================================================\n'
+              '# SANITY',
+              section_start
+          )
+
+
+          robust_fix = r'''# ==========================================================
+          # REMOVE DUPLICATE FIXRAND STORES
+          #
+          # The active CLHash function contains two writes of each
+          # index per iteration:
+          #
+          #     fixrand[i] = prand_idx;
+          #     fixrandex[i] = prandex_idx;
+          #
+          # The first pair occurs before the switch and is required.
+          # The second pair occurs after the switch and is redundant.
+          #
+          # Remove the LAST physical line containing each assignment.
+          # This deliberately ignores whitespace/indentation.
+          # ==========================================================
+
+          def remove_last_assignment(
+              source,
+              token
+          ):
+              positions = []
+
+              pos = 0
+
+              while True:
+
+                  found = source.find(
+                      token,
+                      pos
+                  )
+
+
+                  if found < 0:
+                      break
+
+
+                  positions.append(
+                      found
+                  )
+
+
+                  pos = (
+                      found +
+                      len(token)
+                  )
+
+
+              if len(positions) != 2:
+
+                  raise SystemExit(
+                      'Expected exactly 2 occurrences of '
+                      + token
+                      + ', found '
+                      + str(len(positions))
+                  )
+
+
+              target = positions[-1]
+
+
+              line_start = source.rfind(
+                  '\n',
+                  0,
+                  target
               )
 
 
-              exec(
-                  compile(
-                      blocks[index],
-                      f'v10-block-{index+1}.py',
-                      'exec'
-                  ),
-                  {
-                      '__name__': '__main__',
-                  }
+              if line_start < 0:
+                  line_start = 0
+              else:
+                  line_start += 1
+
+
+              line_end = source.find(
+                  '\n',
+                  target
               )
+
+
+              if line_end < 0:
+                  line_end = len(source)
+              else:
+                  line_end += 1
+
+
+              return (
+                  source[:line_start] +
+                  source[line_end:]
+              )
+
+
+          active = remove_last_assignment(
+              active,
+              'fixrand[i] = prand_idx;'
+          )
+
+
+          active = remove_last_assignment(
+              active,
+              'fixrandex[i] = prandex_idx;'
+          )
+
+
+          print(
+              'Duplicate fixrand/fixrandex stores removed'
+          )
+
+
+          '''
+
+
+          patch = (
+              patch[:section_start] +
+              robust_fix +
+              patch[section_end:]
+          )
+
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'APPLY V11 HOTCORE PATCH'
+          )
+
+          print(
+              '======================================'
+          )
+
+
+          exec(
+              compile(
+                  patch,
+                  'v11-hotcore-fixed.py',
+                  'exec'
+              ),
+              {
+                  '__name__': '__main__',
+              }
+          )
+
+
+          # ==========================================================
+          # BLOCK 3:
+          # exact V11 semantic tests from run #30
+          # ==========================================================
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'RUN V11 SEMANTIC TESTS'
+          )
+
+          print(
+              '======================================'
+          )
+
+
+          exec(
+              compile(
+                  blocks[2],
+                  'v11-semantics.py',
+                  'exec'
+              ),
+              {
+                  '__name__': '__main__',
+              }
+          )
+
+
+          # ==========================================================
+          # FINAL SOURCE CHECKS
+          # ==========================================================
+
+          clhash = Path(
+              'verus/armv7/verus_clhash_portable.cpp'
+          ).read_text()
 
 
           api = Path(
@@ -133,1068 +364,49 @@ jobs:
           ).read_text()
 
 
+          makefile = Path(
+              'Makefile.am'
+          ).read_text()
+
+
           if (
-              'BUILD=A55-FASTMOD-V10'
+              'BUILD=A55-HOTCORE-V11'
               not in api
           ):
+
               raise SystemExit(
-                  'V10 replay failed'
+                  'V11 BUILD ID missing'
               )
 
 
-          print(
-              'EXACT V10 REPLAY: PASS'
-          )
+          if (
+              clhash.count(
+                  'fixrand[i] = prand_idx;'
+              )
+              < 1
+          ):
 
-          PY
-
-
-      # ==============================================================
-      # HOTCORE V11
-      # ==============================================================
-
-      - name: Patch HOTCORE V11
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd src
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+              raise SystemExit(
+                  'Required fixrand store disappeared'
+              )
 
 
-          # ==========================================================
-          # COMPILER
-          # ==========================================================
-
-          p = Path(
-              'Makefile.am'
-          )
-
-          s = p.read_text()
-
-
-          s += r'''
-
-          # A55 HOTCORE V11
-          SHARED_CPPFLAGS += -flto=thin
-          SHARED_CPPFLAGS += -fno-semantic-interposition
-          SHARED_CPPFLAGS += -falign-loops=16
-          SHARED_LDFLAGS += -flto=thin
-          SHARED_LDFLAGS += -Wl,--lto-O3
-          '''
-
-
-          p.write_text(s)
-
-
-          # ==========================================================
-          # CLHASH
-          # ==========================================================
-
-          p = Path(
-              'verus/armv7/verus_clhash_portable.cpp'
-          )
-
-          s = p.read_text()
-
-
-          marker = (
-              '__m128i '
+          active_start = clhash.index(
               '__verusclmulwithoutreduction64alignedrepeat_v2_1'
           )
 
 
-          if marker not in s:
-              raise SystemExit(
-                  'Active CLHash marker missing'
-              )
-
-
-          # ==========================================================
-          # V11 HELPERS
-          # ==========================================================
-
-          helpers = r'''
-
-          // ==========================================================
-          // A55 HOTCORE V11
-          // ==========================================================
-
-          static inline
-          __attribute__((always_inline))
-          int32_t v11_smod64_ctx(
-              int64_t dividend,
-              const v10_div32_ctx *ctx
-          )
-          {
-              const uint64_t raw =
-                  (uint64_t)dividend;
-
-
-              const int negative =
-                  dividend < 0;
-
-
-              const uint64_t magnitude =
-                  negative
-                      ? (~raw + 1ULL)
-                      : raw;
-
-
-              const uint32_t remainder =
-                  v10_umod64_ctx(
-                      magnitude,
-                      ctx
-                  );
-
-
-              const int32_t result =
-                  (int32_t)remainder;
-
-
-              return
-                  negative
-                      ? -result
-                      : result;
-          }
-
-
-          static inline
-          __attribute__((always_inline))
-          __m128i v11_xor_low32(
-              __m128i acc,
-              uint32_t value
-          )
-          {
-              uint32x4_t lanes =
-                  vreinterpretq_u32_s32(
-                      acc
-                  );
-
-
-              lanes =
-                  vsetq_lane_u32(
-                      vgetq_lane_u32(
-                          lanes,
-                          0
-                      ) ^ value,
-
-                      lanes,
-                      0
-                  );
-
-
-              return
-                  vreinterpretq_s32_u32(
-                      lanes
-                  );
-          }
-
-
-          '''
-
-
-          insert_at = s.index(
-              marker
-          )
-
-
-          s = (
-              s[:insert_at] +
-              helpers +
-              s[insert_at:]
-          )
-
-
-          # ==========================================================
-          # CONSTANT PMULL
-          #
-          # lazyLengthHash_port(1024,64)
-          #
-          # CLMUL(64,1024) = x^6 * x^10 = x^16 = 0x10000
-          # ==========================================================
-
-          target = (
-              'lazyLengthHash_port(1024, 64)'
-          )
-
-
-          count = s.count(
-              target
-          )
-
-
-          if count != 2:
-              raise SystemExit(
-                  'Expected 2 constant lazy hashes, found '
-                  + str(count)
-              )
-
-
-          s = s.replace(
-              target,
-              '_mm_cvtsi64_si128_emu(0x10000ULL)'
-          )
-
-
-          # ==========================================================
-          # ACTIVE FUNCTION
-          # ==========================================================
-
-          start = s.index(
-              marker
-          )
-
-
-          end = s.index(
+          active_end = clhash.index(
               '// verus intermediate hash extra - v2.2',
-              start
+              active_start
           )
 
 
-          active = s[
-              start:end
+          active = clhash[
+              active_start:
+              active_end
           ]
 
-
-          # ==========================================================
-          # FUNCTION ALIGNMENT
-          # ==========================================================
-
-          if active.count(marker) != 1:
-              raise SystemExit(
-                  'Active function marker count invalid'
-              )
-
-
-          active = active.replace(
-              marker,
-              '''__attribute__((hot, aligned(64)))
-          __m128i __verusclmulwithoutreduction64alignedrepeat_v2_1''',
-              1
-          )
-
-
-          # ==========================================================
-          # 32-BIT OUTER LOOP
-          # ==========================================================
-
-          old = (
-              '    for (int64_t i = 0; i < 32; i++)'
-          )
-
-
-          if active.count(old) != 1:
-              raise SystemExit(
-                  'Outer loop signature missing'
-              )
-
-
-          active = active.replace(
-              old,
-              '''    const uint32_t keyMask32 =
-                  (uint32_t)keyMask;
-
-
-              for (int i = 0; i < 32; ++i)''',
-              1
-          )
-
-
-          # ==========================================================
-          # SELECTOR -> TWO 32-BIT LANES
-          # ==========================================================
-
-          old = (
-              '        const uint64_t selector = '
-              '_mm_cvtsi128_si64_emu(acc);'
-          )
-
-
-          if active.count(old) != 1:
-              raise SystemExit(
-                  'Selector signature missing'
-              )
-
-
-          active = active.replace(
-              old,
-              '''        const uint32x4_t selector_words =
-                      vreinterpretq_u32_s32(
-                          acc
-                      );
-
-
-                  const uint32_t sel_lo =
-                      vgetq_lane_u32(
-                          selector_words,
-                          0
-                      );
-
-
-                  const uint32_t sel_hi =
-                      vgetq_lane_u32(
-                          selector_words,
-                          1
-                      );''',
-              1
-          )
-
-
-          # ==========================================================
-          # KEY INDEXES
-          # ==========================================================
-
-          old = (
-              'uint32_t prand_idx = '
-              '(selector >> 5) & keyMask;'
-          )
-
-
-          if active.count(old) != 1:
-              raise SystemExit(
-                  'prand selector missing'
-              )
-
-
-          active = active.replace(
-              old,
-              '''uint32_t prand_idx =
-                      (sel_lo >> 5) &
-                      keyMask32;''',
-              1
-          )
-
-
-          old = (
-              'uint32_t prandex_idx = '
-              '(selector >>32) & keyMask;'
-          )
-
-
-          if active.count(old) != 1:
-              raise SystemExit(
-                  'prandex selector missing'
-              )
-
-
-          active = active.replace(
-              old,
-              '''uint32_t prandex_idx =
-                      sel_hi &
-                      keyMask32;''',
-              1
-          )
-
-
-          # ==========================================================
-          # PBUF
-          # ==========================================================
-
-          old = (
-              'pbuf = pbuf_copy + (selector & 3);'
-          )
-
-
-          if active.count(old) != 1:
-              raise SystemExit(
-                  'pbuf selector missing'
-              )
-
-
-          active = active.replace(
-              old,
-              '''pbuf =
-                      pbuf_copy +
-                      (sel_lo & 3u);
-
-
-                  const int pbuf_delta =
-                      (sel_lo & 1u)
-                          ? 1
-                          : -1;''',
-              1
-          )
-
-
-          old = (
-              'switch (selector & 0x1c)'
-          )
-
-
-          if active.count(old) != 1:
-              raise SystemExit(
-                  'Switch selector missing'
-              )
-
-
-          active = active.replace(
-              old,
-              'switch (sel_lo & 0x1cu)',
-              1
-          )
-
-
-          # There are 8 neighbour calculations.
-          neighbour = (
-              '(((selector & 1) << 1) - 1)'
-          )
-
-
-          if active.count(neighbour) != 8:
-              raise SystemExit(
-                  'Unexpected neighbour expression count: '
-                  + str(
-                      active.count(
-                          neighbour
-                      )
-                  )
-              )
-
-
-          active = active.replace(
-              neighbour,
-              'pbuf_delta'
-          )
-
-
-          # ==========================================================
-          # CASE 0x0C
-          # Replace entire block robustly.
-          # ==========================================================
-
-          case_start = active.index(
-              'case 0xc:'
-          )
-
-
-          case_end = active.index(
-              'case 0x10:',
-              case_start
-          )
-
-
-          case0c = r'''case 0xc:
-              {
-                  const __m128i temp1 =
-                      _mm_load_si128_emu(
-                          prand
-                      );
-
-
-                  const __m128i temp2 =
-                      _mm_load_si128_emu(
-                          pbuf -
-                          pbuf_delta
-                      );
-
-
-                  const __m128i add1 =
-                      _mm_xor_si128_emu(
-                          temp1,
-                          temp2
-                      );
-
-
-                  const int32_t divisor =
-                      (int32_t)sel_lo;
-
-
-                  acc =
-                      _mm_xor_si128_emu(
-                          add1,
-                          acc
-                      );
-
-
-                  const int64_t dividend =
-                      _mm_cvtsi128_si64_emu(
-                          acc
-                      );
-
-
-                  const int32_t remainder =
-                      v10_smod64(
-                          dividend,
-                          divisor
-                      );
-
-
-                  acc =
-                      v11_xor_low32(
-                          acc,
-                          (uint32_t)remainder
-                      );
-
-
-                  const __m128i tempa1 =
-                      _mm_mulhrs_epi16_emu(
-                          acc,
-                          temp1
-                      );
-
-
-                  const __m128i tempa2 =
-                      _mm_xor_si128_emu(
-                          tempa1,
-                          temp1
-                      );
-
-
-                  if (dividend & 1)
-                  {
-                      const __m128i temp12 =
-                          _mm_load_si128_emu(
-                              prandex
-                          );
-
-
-                      _mm_store_si128_emu(
-                          prandex,
-                          tempa2
-                      );
-
-
-                      const __m128i temp22 =
-                          _mm_load_si128_emu(
-                              pbuf
-                          );
-
-
-                      const __m128i add12 =
-                          _mm_xor_si128_emu(
-                              temp12,
-                              temp22
-                          );
-
-
-                      const __m128i clprod12 =
-                          _mm_clmulepi64_si128_emu(
-                              add12,
-                              add12,
-                              0x10
-                          );
-
-
-                      acc =
-                          _mm_xor_si128_emu(
-                              clprod12,
-                              acc
-                          );
-
-
-                      const __m128i clprod22 =
-                          _mm_clmulepi64_si128_emu(
-                              temp22,
-                              temp22,
-                              0x10
-                          );
-
-
-                      acc =
-                          _mm_xor_si128_emu(
-                              clprod22,
-                              acc
-                          );
-
-
-                      const __m128i tempb1 =
-                          _mm_mulhrs_epi16_emu(
-                              acc,
-                              temp12
-                          );
-
-
-                      const __m128i tempb2 =
-                          _mm_xor_si128_emu(
-                              tempb1,
-                              temp12
-                          );
-
-
-                      _mm_store_si128_emu(
-                          prand,
-                          tempb2
-                      );
-                  }
-                  else
-                  {
-                      const __m128i tempb3 =
-                          _mm_load_si128_emu(
-                              prandex
-                          );
-
-
-                      _mm_store_si128_emu(
-                          prandex,
-                          tempa2
-                      );
-
-
-                      _mm_store_si128_emu(
-                          prand,
-                          tempb3
-                      );
-
-
-                      const __m128i tempb4 =
-                          _mm_load_si128_emu(
-                              pbuf
-                          );
-
-
-                      acc =
-                          _mm_xor_si128_emu(
-                              tempb4,
-                              acc
-                          );
-                  }
-
-
-                  break;
-              }
-              '''
-
-
-          active = (
-              active[:case_start] +
-              case0c +
-              active[case_end:]
-          )
-
-
-          # ==========================================================
-          # CASE 0x14
-          #
-          # Cache both pbuf vectors.
-          # 32-bit rounds.
-          # Precompute control bits.
-          # ==========================================================
-
-          case_start = active.index(
-              'case 0x14:'
-          )
-
-
-          case_end = active.index(
-              'case 0x18:',
-              case_start
-          )
-
-
-          case14 = r'''case 0x14:
-              {
-                  const __m128i *buftmp =
-                      pbuf -
-                      pbuf_delta;
-
-
-                  const __m128i pbuf_v =
-                      _mm_load_si128_emu(
-                          pbuf
-                      );
-
-
-                  const __m128i buftmp_v =
-                      _mm_load_si128_emu(
-                          buftmp
-                      );
-
-
-                  uint32_t rounds =
-                      sel_hi >>
-                      29;
-
-
-                  const uint32_t control_bits =
-                      (sel_lo >> 28) |
-                      (sel_hi << 4);
-
-
-                  __m128i *rc =
-                      prand;
-
-
-                  uint32_t aesround =
-                      0;
-
-
-                  __m128i onekey;
-
-
-                  do
-                  {
-                      onekey =
-                          _mm_load_si128_emu(
-                              rc++
-                          );
-
-
-                      if (
-                          control_bits &
-                          (1u << rounds)
-                      )
-                      {
-                          const __m128i temp2 =
-                              (rounds & 1u)
-                                  ? pbuf_v
-                                  : buftmp_v;
-
-
-                          const __m128i add1 =
-                              _mm_xor_si128_emu(
-                                  onekey,
-                                  temp2
-                              );
-
-
-                          const __m128i clprod1 =
-                              _mm_clmulepi64_si128_emu(
-                                  add1,
-                                  add1,
-                                  0x10
-                              );
-
-
-                          acc =
-                              _mm_xor_si128_emu(
-                                  clprod1,
-                                  acc
-                              );
-                      }
-                      else
-                      {
-                          __m128i temp2 =
-                              (rounds & 1u)
-                                  ? buftmp_v
-                                  : pbuf_v;
-
-
-                          const uint32_t roundidx =
-                              aesround++ <<
-                              2;
-
-
-                          AES2_EMU(
-                              onekey,
-                              temp2,
-                              roundidx
-                          );
-
-
-                          MIX2_EMU(
-                              onekey,
-                              temp2
-                          );
-
-
-                          acc =
-                              _mm_xor_si128_emu(
-                                  onekey,
-                                  acc
-                              );
-
-
-                          acc =
-                              _mm_xor_si128_emu(
-                                  temp2,
-                                  acc
-                              );
-                      }
-
-
-                  } while (rounds--);
-
-
-                  const __m128i tempa1 =
-                      _mm_load_si128_emu(
-                          prand
-                      );
-
-
-                  const __m128i tempa2 =
-                      _mm_mulhrs_epi16_emu(
-                          acc,
-                          tempa1
-                      );
-
-
-                  const __m128i tempa3 =
-                      _mm_xor_si128_emu(
-                          tempa1,
-                          tempa2
-                      );
-
-
-                  const __m128i tempa4 =
-                      _mm_load_si128_emu(
-                          prandex
-                      );
-
-
-                  _mm_store_si128_emu(
-                      prandex,
-                      tempa3
-                  );
-
-
-                  _mm_store_si128_emu(
-                      prand,
-                      tempa4
-                  );
-
-
-                  break;
-              }
-              '''
-
-
-          active = (
-              active[:case_start] +
-              case14 +
-              active[case_end:]
-          )
-
-
-          # ==========================================================
-          # CASE 0x18
-          #
-          # Biggest V11 optimization after FASTMOD:
-          #
-          # V10 creates v10_div32_ctx on every modulo iteration.
-          # V11 creates it once before the loop.
-          # ==========================================================
-
-          case_start = active.index(
-              'case 0x18:'
-          )
-
-
-          case_end = active.index(
-              'case 0x1c:',
-              case_start
-          )
-
-
-          case18 = r'''case 0x18:
-              {
-                  const __m128i *buftmp =
-                      pbuf -
-                      pbuf_delta;
-
-
-                  const __m128i pbuf_v =
-                      _mm_load_si128_emu(
-                          pbuf
-                      );
-
-
-                  const __m128i buftmp_v =
-                      _mm_load_si128_emu(
-                          buftmp
-                      );
-
-
-                  uint32_t rounds =
-                      sel_hi >>
-                      29;
-
-
-                  const uint32_t control_bits =
-                      (sel_lo >> 28) |
-                      (sel_hi << 4);
-
-
-                  __m128i *rc =
-                      prand;
-
-
-                  __m128i onekey;
-
-
-                  const int32_t divisor =
-                      (int32_t)sel_lo;
-
-
-                  const v10_div32_ctx divctx =
-                      v10_make_div32_ctx(
-                          divisor
-                      );
-
-
-                  do
-                  {
-                      onekey =
-                          _mm_load_si128_emu(
-                              rc++
-                          );
-
-
-                      if (
-                          control_bits &
-                          (1u << rounds)
-                      )
-                      {
-                          const __m128i temp2 =
-                              (rounds & 1u)
-                                  ? pbuf_v
-                                  : buftmp_v;
-
-
-                          onekey =
-                              _mm_xor_si128_emu(
-                                  onekey,
-                                  temp2
-                              );
-
-
-                          const int64_t dividend =
-                              _mm_cvtsi128_si64_emu(
-                                  onekey
-                              );
-
-
-                          const int32_t remainder =
-                              v11_smod64_ctx(
-                                  dividend,
-                                  &divctx
-                              );
-
-
-                          acc =
-                              v11_xor_low32(
-                                  acc,
-                                  (uint32_t)remainder
-                              );
-                      }
-                      else
-                      {
-                          const __m128i temp2 =
-                              (rounds & 1u)
-                                  ? buftmp_v
-                                  : pbuf_v;
-
-
-                          const __m128i add1 =
-                              _mm_xor_si128_emu(
-                                  onekey,
-                                  temp2
-                              );
-
-
-                          onekey =
-                              _mm_clmulepi64_si128_emu(
-                                  add1,
-                                  add1,
-                                  0x10
-                              );
-
-
-                          const __m128i clprod2 =
-                              _mm_mulhrs_epi16_emu(
-                                  acc,
-                                  onekey
-                              );
-
-
-                          acc =
-                              _mm_xor_si128_emu(
-                                  clprod2,
-                                  acc
-                              );
-                      }
-
-
-                  } while (rounds--);
-
-
-                  const __m128i tempa3 =
-                      _mm_load_si128_emu(
-                          prandex
-                      );
-
-
-                  const __m128i tempa4 =
-                      _mm_xor_si128_emu(
-                          tempa3,
-                          acc
-                      );
-
-
-                  _mm_store_si128_emu(
-                      prandex,
-                      onekey
-                  );
-
-
-                  _mm_store_si128_emu(
-                      prand,
-                      tempa4
-                  );
-
-
-                  break;
-              }
-              '''
-
-
-          active = (
-              active[:case_start] +
-              case18 +
-              active[case_end:]
-          )
-
-
-          # ==========================================================
-          # REMOVE DUPLICATE FIXRAND STORES
-          #
-          # Original active function stores:
-          #
-          #   fixrand[i]
-          #   fixrandex[i]
-          #
-          # before the switch AND AGAIN after the switch.
-          #
-          # Values never change.
-          # ==========================================================
-
-          tail_pattern = re.compile(
-              r'\n\s*fixrand\[i\]\s*=\s*prand_idx;'
-              r'\s*\n\s*fixrandex\[i\]\s*=\s*prandex_idx;'
-              r'\s*\n\s*}\s*\n\s*return acc;',
-              re.MULTILINE
-          )
-
-
-          matches = list(
-              tail_pattern.finditer(
-                  active
-              )
-          )
-
-
-          if len(matches) != 1:
-              raise SystemExit(
-                  'Duplicate FixKey tail pair count = '
-                  + str(len(matches))
-              )
-
-
-          active = tail_pattern.sub(
-              '''
-              }
-              return acc;''',
-              active,
-              count=1
-          )
-
-
-          # ==========================================================
-          # SANITY
-          # ==========================================================
 
           if (
               active.count(
@@ -1202,8 +414,9 @@ jobs:
               )
               != 1
           ):
+
               raise SystemExit(
-                  'fixrand store count != 1'
+                  'Active fixrand write count is not 1'
               )
 
 
@@ -1213,72 +426,72 @@ jobs:
               )
               != 1
           ):
+
               raise SystemExit(
-                  'fixrandex store count != 1'
+                  'Active fixrandex write count is not 1'
               )
-
-
-          forbidden = [
-              'selector >>',
-              'selector &',
-              '(uint32_t)selector',
-              '(uint64_t)selector',
-          ]
-
-
-          for token in forbidden:
-
-              if token in active:
-
-                  raise SystemExit(
-                      'Old selector arithmetic remains: '
-                      + token
-                  )
-
-
-          # ==========================================================
-          # WRITE FUNCTION BACK
-          # ==========================================================
-
-          s = (
-              s[:start] +
-              active +
-              s[end:]
-          )
-
-
-          p.write_text(s)
-
-
-          # ==========================================================
-          # BUILD ID
-          # ==========================================================
-
-          p = Path(
-              'api.cpp'
-          )
-
-
-          api = p.read_text()
 
 
           if (
-              'BUILD=A55-FASTMOD-V10'
-              not in api
+              'v11_smod64_ctx'
+              not in active
           ):
+
               raise SystemExit(
-                  'V10 build ID missing'
+                  'V11 hoisted FASTMOD missing'
               )
 
 
-          api = api.replace(
-              'BUILD=A55-FASTMOD-V10',
-              'BUILD=A55-HOTCORE-V11',
-              1
-          )
+          if (
+              'selector_words'
+              not in active
+          ):
+
+              raise SystemExit(
+                  'V11 32-bit selector missing'
+              )
 
 
-          p.write_text(api)
+          if (
+              'pbuf_v'
+              not in active or
+              'buftmp_v'
+              not in active
+          ):
+
+              raise SystemExit(
+                  'V11 cached pbuf vectors missing'
+              )
+
+
+          if (
+              'lazyLengthHash_port(1024, 64)'
+              in clhash
+          ):
+
+              raise SystemExit(
+                  'Constant PMULL still present'
+              )
+
+
+          if (
+              '0x10000ULL'
+              not in clhash
+          ):
+
+              raise SystemExit(
+                  'Constant lazy hash missing'
+              )
+
+
+          if (
+              '-flto=thin'
+              not in makefile
+          ):
+
+              raise SystemExit(
+                  'ThinLTO flag missing'
+              )
 
 
           print(
@@ -1286,73 +499,21 @@ jobs:
           )
 
           print(
-              'A55 HOTCORE V11 PATCH: PASS'
+              'V11 SOURCE VALIDATION: PASS'
           )
 
           print(
               '======================================'
-          )
-
-          print(
-              'Exact V10             : PRESERVED'
-          )
-
-          print(
-              'FASTMOD               : PRESERVED'
-          )
-
-          print(
-              'Selector              : 32 BIT'
-          )
-
-          print(
-              'Rounds                : 32 BIT'
-          )
-
-          print(
-              'pbuf delta            : CACHED'
-          )
-
-          print(
-              'case14 buffers        : CACHED'
-          )
-
-          print(
-              'case18 buffers        : CACHED'
-          )
-
-          print(
-              'case18 div context    : HOISTED'
-          )
-
-          print(
-              'Modulo XOR            : DIRECT'
-          )
-
-          print(
-              'Duplicate index stores: REMOVED'
-          )
-
-          print(
-              'Constant PMULL        : REMOVED'
-          )
-
-          print(
-              'ThinLTO               : ENABLED'
-          )
-
-          print(
-              'BUILD=A55-HOTCORE-V11'
           )
 
           PY
 
 
       # ==============================================================
-      # VERIFY SOURCE
+      # SHOW IMPORTANT PATCHES
       # ==============================================================
 
-      - name: Verify V11 patches
+      - name: Verify V11 source
         shell: bash
         run: |
           set -euo pipefail
@@ -1367,26 +528,28 @@ jobs:
             api.cpp
 
 
-          echo "===== FASTMOD ====="
+          echo "===== FASTMOD V10 ====="
 
           grep -n \
             "v10_umod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
+          echo "===== V11 FASTMOD CTX ====="
+
           grep -n \
             "v11_smod64_ctx" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== SELECTOR LANES ====="
+          echo "===== V11 SELECTOR ====="
 
           grep -n \
             "selector_words" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== CACHED BUFFERS ====="
+          echo "===== BUFFER CACHE ====="
 
           grep -n \
             "pbuf_v" \
@@ -1398,278 +561,32 @@ jobs:
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== DIRECT MOD XOR ====="
+          echo "===== LOW32 XOR ====="
 
           grep -n \
             "v11_xor_low32" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          echo "===== CONSTANT PMULL ====="
+          echo "===== FIXRAND ====="
+
+          grep -n \
+            "fixrand\[i\] = prand_idx" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== CONSTANT PMULL REMOVAL ====="
 
           grep -n \
             "0x10000ULL" \
             verus/armv7/verus_clhash_portable.cpp
 
 
-          if grep -n \
-            "lazyLengthHash_port(1024, 64)" \
-            verus/armv7/verus_clhash_portable.cpp
-          then
-              echo \
-                "ERROR: constant lazy hash survived"
-
-              exit 1
-          fi
-
-
-          echo "===== LTO ====="
+          echo "===== THIN LTO ====="
 
           grep -n \
             "flto=thin" \
             Makefile.am
-
-
-      # ==============================================================
-      # SEMANTIC TESTS
-      # ==============================================================
-
-      - name: Verify HOTCORE V11 semantics
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          import random
-
-
-          # ==========================================================
-          # CONSTANT PMULL
-          # ==========================================================
-
-          def clmul(a, b):
-              result = 0
-
-              while a:
-
-                  bit = (
-                      a &
-                      -a
-                  )
-
-
-                  shift = (
-                      bit.bit_length() -
-                      1
-                  )
-
-
-                  result ^=
-                      b <<
-                      shift
-
-
-                  a ^=
-                      bit
-
-
-              return result
-
-
-          assert (
-              clmul(
-                  64,
-                  1024
-              )
-              ==
-              0x10000
-          )
-
-
-          print(
-              'Constant PMULL: PASS'
-          )
-
-
-          # ==========================================================
-          # SELECTOR
-          # ==========================================================
-
-          random.seed(
-              0xA5511
-          )
-
-
-          for _ in range(
-              1000000
-          ):
-              selector = random.getrandbits(
-                  64
-              )
-
-
-              lo = (
-                  selector &
-                  0xffffffff
-              )
-
-
-              hi = (
-                  selector >>
-                  32
-              )
-
-
-              mask = 511
-
-
-              assert (
-                  ((selector >> 5) & mask)
-                  ==
-                  ((lo >> 5) & mask)
-              )
-
-
-              assert (
-                  ((selector >> 32) & mask)
-                  ==
-                  (hi & mask)
-              )
-
-
-              assert (
-                  (selector & 3)
-                  ==
-                  (lo & 3)
-              )
-
-
-              assert (
-                  (selector & 0x1c)
-                  ==
-                  (lo & 0x1c)
-              )
-
-
-              assert (
-                  (selector >> 61)
-                  ==
-                  (hi >> 29)
-              )
-
-
-              delta = (
-                  1
-                  if lo & 1
-                  else -1
-              )
-
-
-              old_offset = (
-                  -1
-                  if selector & 1
-                  else 1
-              )
-
-
-              assert (
-                  -delta
-                  ==
-                  old_offset
-              )
-
-
-              control_bits = (
-                  (
-                      lo >>
-                      28
-                  ) |
-                  (
-                      hi <<
-                      4
-                  )
-              ) & 0xffffffff
-
-
-              for r in range(8):
-
-                  old_bit = bool(
-                      selector &
-                      (
-                          0x10000000 <<
-                          r
-                      )
-                  )
-
-
-                  new_bit = bool(
-                      control_bits &
-                      (
-                          1 <<
-                          r
-                      )
-                  )
-
-
-                  assert (
-                      old_bit ==
-                      new_bit
-                  )
-
-
-          print(
-              '1,000,000 selector tests: PASS'
-          )
-
-
-          # ==========================================================
-          # LOW32 XOR
-          # ==========================================================
-
-          for _ in range(
-              250000
-          ):
-              lanes = [
-                  random.getrandbits(32)
-                  for _ in range(4)
-              ]
-
-
-              value = random.getrandbits(
-                  32
-              )
-
-
-              reference = [
-                  lanes[0] ^ value,
-                  lanes[1],
-                  lanes[2],
-                  lanes[3],
-              ]
-
-
-              test = lanes[:]
-
-              test[0] ^=
-                  value
-
-
-              assert (
-                  reference ==
-                  test
-              )
-
-
-          print(
-              '250,000 low32 XOR tests: PASS'
-          )
-
-
-          print(
-              'HOTCORE V11 semantics: PASS'
-          )
-
-          PY
 
 
       # ==============================================================
@@ -1763,7 +680,7 @@ jobs:
             "$BIN"
 
 
-          echo "===== BUILD ====="
+          echo "===== BUILD ID ====="
 
           strings \
             "$BIN" |
@@ -1779,6 +696,21 @@ jobs:
             grep \
               "__aeabi_ldivmod" ||
             true
+
+
+          echo "===== UDIV ====="
+
+          if command -v llvm-objdump >/dev/null 2>&1
+          then
+
+              llvm-objdump \
+                -d \
+                "$BIN" |
+                grep -m 30 \
+                  -E "\budiv\b" ||
+                true
+
+          fi
 
 
           echo "===== SIZE ====="
@@ -1843,19 +775,19 @@ jobs:
           Build:
           A55-HOTCORE-V11
 
-          Base:
-          exact A55-FASTMOD-V10
+          Stable base:
+          A55-FASTMOD-V10
 
-          V10 workflow:
+          V10 measured baseline:
+          approximately 1.16 MH/s sustained
+
+          V10 workflow commit:
           73446a48e954bcc579c302d5a01e3dfb71b2bd30
 
-          V8 workflow:
-          6cf06bdd8f85afef8793180e6dd68b4a1fd9f0
+          V11 run-30 workflow:
+          7f92ff0f8788f54781704ce8414915584450bd78
 
-          Source:
-          shmutalov/ccminer
-
-          Source commit:
+          ccminer source:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
 
           ABI:
@@ -1863,9 +795,6 @@ jobs:
 
           CPU:
           Cortex-A55
-
-          V10 baseline:
-          approximately 1.16 MH/s sustained
 
           FASTMOD V10:
           preserved
@@ -1882,46 +811,52 @@ jobs:
           Partial Haraka:
           preserved
 
-          Haraka candidate replay:
+          Full candidate replay:
           preserved
 
-          Haraka runtime validation:
+          Runtime Haraka validation:
           preserved
 
           V11 selector:
-          split directly into 32-bit NEON lanes
+          split into 32-bit NEON lanes
 
-          V11 loop counters:
+          V11 outer loop:
+          32-bit
+
+          V11 rounds:
           32-bit
 
           V11 pbuf neighbour:
-          cached
+          precomputed
 
           V11 case 0x14:
-          buffer vectors cached
+          pbuf and buftmp vectors cached
 
           V11 case 0x14:
-          selector control bits cached
+          control bits cached
 
           V11 case 0x18:
-          buffer vectors cached
+          pbuf and buftmp vectors cached
 
           V11 case 0x18:
-          selector control bits cached
+          control bits cached
 
           V11 case 0x18:
-          normalized FASTMOD context hoisted outside loop
+          FASTMOD context hoisted outside rounds loop
 
           V11 modulo XOR:
-          direct low32 lane
+          direct low32 NEON lane
 
-          Duplicate fixrand/fixrandex stores:
+          Duplicate fixrand stores:
+          removed
+
+          Duplicate fixrandex stores:
           removed
 
           lazyLengthHash(1024,64):
-          compile-time 0x10000
+          constant 0x10000
 
-          Per-hash constant PMULL:
+          Constant per-hash PMULL:
           removed
 
           ThinLTO:
@@ -1941,7 +876,7 @@ jobs:
 
 
       # ==============================================================
-      # ARTIFACT
+      # UPLOAD
       # ==============================================================
 
       - name: Upload HOTCORE V11 artifact
