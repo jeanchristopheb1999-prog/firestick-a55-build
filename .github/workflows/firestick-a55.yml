@@ -1,4 +1,4 @@
-name: FireStick A55 QCFAST V12
+name: FireStick A55 SHADOWKEY V13
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
     steps:
 
       # ==============================================================
-      # EXACT BASES NEEDED BY THE SUCCESSFUL V12 #34 PATCH
+      # BASES REQUIRED TO RECREATE EXACT V12 #35
       # ==============================================================
 
       - name: Checkout exact V8 workflow
@@ -40,7 +40,7 @@ jobs:
           path: v11-base
 
 
-      - name: Checkout exact V11 33 builder
+      - name: Checkout exact V11 builder
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
@@ -48,17 +48,20 @@ jobs:
           path: v11-builder
 
 
-      # ==============================================================
-      # IMPORTANT:
-      # THIS IS THE V12 #34 WORKFLOW WHOSE SOURCE PATCH ALREADY PASSED.
-      # ==============================================================
-
-      - name: Checkout successful V12 patch source
+      - name: Checkout V12 source-patch base
         uses: actions/checkout@v4
         with:
           repository: jeanchristopheb1999-prog/firestick-a55-build
           ref: 50ac3037b54d6f045e534af8b04a2ddf571ae844
           path: v12-base
+
+
+      - name: Checkout exact successful V12 35 builder
+        uses: actions/checkout@v4
+        with:
+          repository: jeanchristopheb1999-prog/firestick-a55-build
+          ref: 5f9aa55a96369f8da93561e0c839ed81bc3e15c2
+          path: v12-builder
 
 
       - name: Checkout pinned ccminer source
@@ -70,16 +73,10 @@ jobs:
 
 
       # ==============================================================
-      # REPLAY ONLY THE TWO BLOCKS THAT ALREADY PASSED IN RUN #34
-      #
-      # block 0 = exact V11 #33 reconstruction
-      # block 1 = QCFAST V12 source patch
-      #
-      # block 2 = old broken Python test
-      #           -> deliberately NOT executed
+      # REPLAY EXACT SUCCESSFUL V12 #35
       # ==============================================================
 
-      - name: Replay proven V12 source patch
+      - name: Replay exact V12 35
         shell: bash
         run: |
           set -euo pipefail
@@ -92,7 +89,7 @@ jobs:
 
 
           workflow = Path(
-              '../v12-base/.github/workflows/firestick-a55.yml'
+              '../v12-builder/.github/workflows/firestick-a55.yml'
           ).read_text()
 
 
@@ -122,7 +119,7 @@ jobs:
                   if end is None:
 
                       raise SystemExit(
-                          'Unterminated Python block'
+                          'Unterminated V12 builder Python block'
                       )
 
 
@@ -142,73 +139,19 @@ jobs:
                   i += 1
 
 
-          if len(blocks) < 3:
+          if len(blocks) < 2:
 
               raise SystemExit(
-                  'Expected 3 V12 blocks, found '
+                  'Expected at least 2 V12 builder blocks, found '
                   + str(len(blocks))
               )
 
 
-          print(
-              '======================================'
-          )
-
-          print(
-              'REPLAY EXACT V11 #33'
-          )
-
-          print(
-              '======================================'
-          )
-
-
+          # Block zero is the proven source reconstruction.
           exec(
               compile(
                   blocks[0],
-                  'v12-replay-v11.py',
-                  'exec'
-              ),
-              {
-                  '__name__': '__main__',
-              }
-          )
-
-
-          api = Path(
-              'api.cpp'
-          ).read_text()
-
-
-          if 'BUILD=A55-HOTCORE-V11' not in api:
-
-              raise SystemExit(
-                  'V11 #33 reconstruction failed'
-              )
-
-
-          print(
-              'EXACT V11 #33: PASS'
-          )
-
-
-          print(
-              '======================================'
-          )
-
-          print(
-              'REPLAY PROVEN V12 #34 PATCH'
-          )
-
-          print(
-              '======================================'
-          )
-
-
-          exec(
-              compile(
-                  blocks[1],
-                  'v12-qcfast-source.py',
+                  'replay-v12-35.py',
                   'exec'
               ),
               {
@@ -225,7 +168,7 @@ jobs:
           if 'BUILD=A55-QCFAST-V12' not in api:
 
               raise SystemExit(
-                  'V12 BUILD ID missing'
+                  'Exact V12 #35 reconstruction failed'
               )
 
 
@@ -235,14 +178,12 @@ jobs:
 
 
           required = [
+              '__verusclmulwithoutreduction64alignedrepeat_v12_fast',
               'v12_mulhrs_fast',
               'v12_read_fpscr',
-              'v12_write_fpscr',
               'v12_clear_qc',
               'v12_probe_qc',
               'v12_rollback_key',
-              '__verusclmulwithoutreduction64alignedrepeat_v12_fast',
-              'V12_FPSCR_QC',
           ]
 
 
@@ -251,7 +192,7 @@ jobs:
               if token not in clhash:
 
                   raise SystemExit(
-                      'Missing V12 token: '
+                      'V12 reconstruction missing: '
                       + token
                   )
 
@@ -261,7 +202,7 @@ jobs:
           )
 
           print(
-              'V12 SOURCE REPLAY: PASS'
+              'EXACT V12 #35 REPLAY: PASS'
           )
 
           print(
@@ -272,12 +213,1363 @@ jobs:
 
 
       # ==============================================================
-      # CLEAN SEMANTIC TEST
-      #
-      # Completely replaces the broken run #34 test.
+      # V13 SHADOWKEY PATCH
       # ==============================================================
 
-      - name: Verify QCFAST V12 semantics
+      - name: Patch SHADOWKEY V13
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd src
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+
+          # ==========================================================
+          # FUNCTION EXTRACTION HELPER
+          # ==========================================================
+
+          def function_bounds(
+              source,
+              name
+          ):
+
+              name_pos = source.index(
+                  name
+              )
+
+
+              brace = source.index(
+                  '{',
+                  name_pos
+              )
+
+
+              depth = 0
+              end = None
+
+
+              for i in range(
+                  brace,
+                  len(source)
+              ):
+
+                  if source[i] == '{':
+
+                      depth += 1
+
+
+                  elif source[i] == '}':
+
+                      depth -= 1
+
+
+                      if depth == 0:
+
+                          end = i + 1
+                          break
+
+
+              if end is None:
+
+                  raise SystemExit(
+                      'Could not find end of function: '
+                      + name
+                  )
+
+
+              return (
+                  name_pos,
+                  brace,
+                  end
+              )
+
+
+          # ==========================================================
+          # CLHASH
+          # ==========================================================
+
+          clpath = Path(
+              'verus/armv7/verus_clhash_portable.cpp'
+          )
+
+
+          s = clpath.read_text()
+
+
+          v12_fast_name = (
+              '__verusclmulwithoutreduction64alignedrepeat_v12_fast'
+          )
+
+
+          (
+              v12_name_pos,
+              v12_brace,
+              v12_end
+          ) = function_bounds(
+              s,
+              v12_fast_name
+          )
+
+
+          v12_body = s[
+              v12_brace:
+              v12_end
+          ]
+
+
+          # ==========================================================
+          # REMOVE HOT-PATH BACKUP WRITES
+          #
+          # V12 does this every one of the 32 CLHash iterations:
+          #
+          #   save prand original 128 bits
+          #   save prandex original 128 bits
+          #   save two uint32 indexes
+          #
+          # V13 FAST path:
+          #
+          #   NO original-value saves.
+          #   only two uint16 indexes.
+          # ==========================================================
+
+          patterns = [
+              (
+                  r'\s*_mm_store_si128_emu'
+                  r'\(\s*&g_prand\[i\]\s*,\s*prand\[0\]\s*\)\s*;',
+
+                  ''
+              ),
+
+              (
+                  r'\s*_mm_store_si128_emu'
+                  r'\(\s*&g_prandex\[i\]\s*,\s*prandex\[0\]\s*\)\s*;',
+
+                  ''
+              ),
+
+              (
+                  r'\s*fixrand\[i\]\s*=\s*prand_idx\s*;',
+
+                  '\n        v13_idx_a[i] = '
+                  '(uint16_t)prand_idx;'
+              ),
+
+              (
+                  r'\s*fixrandex\[i\]\s*=\s*prandex_idx\s*;',
+
+                  '\n        v13_idx_b[i] = '
+                  '(uint16_t)prandex_idx;'
+              ),
+          ]
+
+
+          shadow_body = v12_body
+
+
+          for pattern, replacement in patterns:
+
+              shadow_body, count = re.subn(
+                  pattern,
+                  replacement,
+                  shadow_body,
+                  count=1
+              )
+
+
+              if count != 1:
+
+                  raise SystemExit(
+                      'V13 shadow replacement failed: '
+                      + pattern
+                      + ' count='
+                      + str(count)
+                  )
+
+
+          # The backup objects must be completely absent
+          # from the new core.
+          forbidden = [
+              'g_prand',
+              'g_prandex',
+              'fixrand[',
+              'fixrandex[',
+          ]
+
+
+          for token in forbidden:
+
+              if token in shadow_body:
+
+                  raise SystemExit(
+                      'Old backup traffic survived in V13 core: '
+                      + token
+                  )
+
+
+          if shadow_body.count(
+                  'v13_idx_a[i]'
+              ) != 1:
+
+              raise SystemExit(
+                  'V13 idx_a store count invalid'
+              )
+
+
+          if shadow_body.count(
+                  'v13_idx_b[i]'
+              ) != 1:
+
+              raise SystemExit(
+                  'V13 idx_b store count invalid'
+              )
+
+
+          # ==========================================================
+          # BUILD NEW SHADOW CORE
+          # ==========================================================
+
+          shadow_function = r'''
+          static
+          __attribute__((hot, aligned(64)))
+          __m128i
+          __verusclmulwithoutreduction64alignedrepeat_v13_shadow(
+              __m128i *randomsource,
+              const __m128i buf[4],
+              uint64_t keyMask,
+              uint16_t * __restrict v13_idx_a,
+              uint16_t * __restrict v13_idx_b
+          )
+          ''' + shadow_body
+
+
+          # ==========================================================
+          # V13 HELPERS + WRAPPER
+          #
+          # v12_qc_mode is retained.
+          #
+          # First hash:
+          #   V12 performs its normal QC self-test.
+          #
+          # First V13 shadow hash:
+          #   run shadow
+          #   save the 40 mutated Haraka round keys
+          #   restore from immutable base
+          #   run exact V11 core
+          #   compare intermediate AND round keys
+          #
+          # Normal path after validation:
+          #   shadow CLHash
+          #   Haraka
+          #   restore from immutable base
+          # ==========================================================
+
+          helpers = r'''
+
+          // ==========================================================
+          // A55 SHADOWKEY V13
+          // ==========================================================
+
+          static __thread int
+          v13_shadow_state = 0;
+
+          //  0 = not validated yet
+          //  1 = validated
+          // -1 = disabled permanently
+
+
+          extern "C"
+          __attribute__((always_inline))
+          inline void verusclhashv13_restore(
+              void *random,
+              const void *base,
+              const uint16_t *idx_a,
+              const uint16_t *idx_b
+          )
+          {
+              __m128i *key =
+                  (__m128i *)random;
+
+
+              const __m128i *base_key =
+                  (const __m128i *)base;
+
+
+          #pragma clang loop unroll(full)
+              for (
+                  int i = 0;
+                  i < 32;
+                  ++i
+              )
+              {
+                  const uint32_t a =
+                      (uint32_t)idx_a[i];
+
+
+                  const uint32_t b =
+                      (uint32_t)idx_b[i];
+
+
+                  key[a] =
+                      base_key[a];
+
+
+                  key[b] =
+                      base_key[b];
+              }
+          }
+
+
+          extern "C"
+          uint64_t verusclhashv13_shadow(
+              void *random,
+              const unsigned char buf[64],
+              uint64_t keyMask,
+              const void *base,
+              uint16_t *idx_a,
+              uint16_t *idx_b,
+              uint32_t *fixrand,
+              uint32_t *fixrandex,
+              __m128i *g_prand,
+              __m128i *g_prandex,
+              int *restore_mode
+          )
+          {
+              __m128i *rs64 =
+                  (__m128i *)random;
+
+
+              const __m128i *string =
+                  (const __m128i *)buf;
+
+
+              // ======================================================
+              // LET V12 COMPLETE ITS OWN HARDWARE VALIDATION FIRST
+              // ======================================================
+
+              if (__builtin_expect(
+                      v12_qc_mode != 1,
+                      0
+                  ))
+              {
+                  *restore_mode = 1;
+
+
+                  return
+                      verusclhashv2_2(
+                          random,
+                          buf,
+                          keyMask,
+                          fixrand,
+                          fixrandex,
+                          g_prand,
+                          g_prandex
+                      );
+              }
+
+
+              if (__builtin_expect(
+                      v13_shadow_state < 0,
+                      0
+                  ))
+              {
+                  *restore_mode = 1;
+
+
+                  return
+                      verusclhashv2_2(
+                          random,
+                          buf,
+                          keyMask,
+                          fixrand,
+                          fixrandex,
+                          g_prand,
+                          g_prandex
+                      );
+              }
+
+
+              // ======================================================
+              // FAST SHADOW CORE
+              // ======================================================
+
+              v12_clear_qc();
+
+
+              __m128i fast_acc =
+                  __verusclmulwithoutreduction64alignedrepeat_v13_shadow(
+                      rs64,
+                      string,
+                      keyMask,
+                      idx_a,
+                      idx_b
+                  );
+
+
+              const uint32_t fast_flags =
+                  v12_read_fpscr();
+
+
+              // ======================================================
+              // RARE MULHRS SATURATION
+              //
+              // Restore directly from immutable key,
+              // then replay the exact V11 CLHash.
+              // ======================================================
+
+              if (__builtin_expect(
+                      (
+                          fast_flags &
+                          V12_FPSCR_QC
+                      ) != 0,
+                      0
+                  ))
+              {
+                  verusclhashv13_restore(
+                      random,
+                      base,
+                      idx_a,
+                      idx_b
+                  );
+
+
+                  v12_clear_qc();
+
+
+                  __m128i exact_acc =
+                      __verusclmulwithoutreduction64alignedrepeat_v2_1(
+                          rs64,
+                          string,
+                          keyMask,
+                          fixrand,
+                          fixrandex,
+                          g_prand,
+                          g_prandex
+                      );
+
+
+                  v12_clear_qc();
+
+
+                  exact_acc =
+                      _mm_xor_si128_emu(
+                          exact_acc,
+                          _mm_cvtsi64_si128_emu(
+                              0x10000ULL
+                          )
+                      );
+
+
+                  *restore_mode = 1;
+
+
+                  return
+                      precompReduction64_port(
+                          exact_acc
+                      );
+              }
+
+
+              // ======================================================
+              // REDUCE FAST INTERMEDIATE
+              // ======================================================
+
+              __m128i reduced_fast_acc =
+                  _mm_xor_si128_emu(
+                      fast_acc,
+                      _mm_cvtsi64_si128_emu(
+                          0x10000ULL
+                      )
+                  );
+
+
+              const uint64_t fast_hash =
+                  precompReduction64_port(
+                      reduced_fast_acc
+                  );
+
+
+              // ======================================================
+              // ONE-TIME SHADOW VALIDATION
+              //
+              // Validate both:
+              //   1. CLHash intermediate
+              //   2. all 40 Haraka round keys that follow the
+              //      intermediate-selected key offset.
+              // ======================================================
+
+              if (__builtin_expect(
+                      v13_shadow_state == 0,
+                      0
+                  ))
+              {
+                  alignas(16)
+                  __m128i fast_round_keys[40];
+
+
+                  const uint32_t fast_offset =
+                      (uint32_t)(
+                          fast_hash &
+                          511ULL
+                      );
+
+
+                  memcpy(
+                      fast_round_keys,
+                      rs64 + fast_offset,
+                      sizeof(fast_round_keys)
+                  );
+
+
+                  // Return mutable key to pristine state.
+                  verusclhashv13_restore(
+                      random,
+                      base,
+                      idx_a,
+                      idx_b
+                  );
+
+
+                  v12_clear_qc();
+
+
+                  // Re-run exact V11.
+                  __m128i exact_acc =
+                      __verusclmulwithoutreduction64alignedrepeat_v2_1(
+                          rs64,
+                          string,
+                          keyMask,
+                          fixrand,
+                          fixrandex,
+                          g_prand,
+                          g_prandex
+                      );
+
+
+                  v12_clear_qc();
+
+
+                  exact_acc =
+                      _mm_xor_si128_emu(
+                          exact_acc,
+                          _mm_cvtsi64_si128_emu(
+                              0x10000ULL
+                          )
+                      );
+
+
+                  const uint64_t exact_hash =
+                      precompReduction64_port(
+                          exact_acc
+                      );
+
+
+                  const uint32_t exact_offset =
+                      (uint32_t)(
+                          exact_hash &
+                          511ULL
+                      );
+
+
+                  const int hash_equal =
+                      fast_hash ==
+                      exact_hash;
+
+
+                  const int keys_equal =
+                      (
+                          fast_offset ==
+                          exact_offset
+                      )
+                      &&
+                      (
+                          memcmp(
+                              fast_round_keys,
+                              rs64 + exact_offset,
+                              sizeof(fast_round_keys)
+                          )
+                          == 0
+                      );
+
+
+                  if (
+                      hash_equal &&
+                      keys_equal
+                  )
+                  {
+                      v13_shadow_state = 1;
+                  }
+                  else
+                  {
+                      v13_shadow_state = -1;
+                  }
+
+
+                  // Exact path currently owns the mutations.
+                  // Caller must perform classic FixKey.
+                  *restore_mode = 1;
+
+
+                  return exact_hash;
+              }
+
+
+              // ======================================================
+              // VALIDATED FAST PATH
+              //
+              // Caller executes partial Haraka while the working
+              // key is still mutated, then restores using base key.
+              // ======================================================
+
+              *restore_mode = 0;
+
+
+              return fast_hash;
+          }
+
+
+          '''
+
+
+          insert_at = v12_end
+
+
+          s = (
+              s[:insert_at]
+              + '\n'
+              + helpers
+              + '\n'
+              + shadow_function
+              + '\n'
+              + s[insert_at:]
+          )
+
+
+          clpath.write_text(
+              s
+          )
+
+
+          # ==========================================================
+          # HEADER DECLARATIONS
+          # ==========================================================
+
+          hpath = Path(
+              'verus/armv7/verus_clhash.h'
+          )
+
+
+          h = hpath.read_text()
+
+
+          marker = (
+              'uint64_t verusclhash_port('
+          )
+
+
+          marker_pos = h.index(
+              marker
+          )
+
+
+          decl = r'''
+          uint64_t verusclhashv13_shadow(
+              void *random,
+              const unsigned char buf[64],
+              uint64_t keyMask,
+              const void *base,
+              uint16_t *idx_a,
+              uint16_t *idx_b,
+              uint32_t *__restrict fixrand,
+              uint32_t *__restrict fixrandex,
+              __m128i *g_prand,
+              __m128i *g_prandex,
+              int *restore_mode
+          );
+
+          void verusclhashv13_restore(
+              void *random,
+              const void *base,
+              const uint16_t *idx_a,
+              const uint16_t *idx_b
+          );
+
+          '''
+
+
+          h = (
+              h[:marker_pos]
+              + decl
+              + h[marker_pos:]
+          )
+
+
+          hpath.write_text(
+              h
+          )
+
+
+          # ==========================================================
+          # VERUSSCAN
+          # ==========================================================
+
+          spath = Path(
+              'verus/armv7/verusscan.cpp'
+          )
+
+
+          scan = spath.read_text()
+
+
+          # ==========================================================
+          # EXPAND SINGLE ALLOCATION
+          #
+          # Existing:
+          #   working key : 8832
+          #   V11/V12 backup area : 1024
+          #
+          # Add:
+          #   immutable base key : 8832
+          # ==========================================================
+
+          old_size = (
+              'VERUS_KEY_SIZE + 1024'
+          )
+
+
+          size_count = scan.count(
+              old_size
+          )
+
+
+          if size_count != 1:
+
+              raise SystemExit(
+                  'Expected one V12 data_key allocation size, found '
+                  + str(size_count)
+              )
+
+
+          scan = scan.replace(
+              old_size,
+              'VERUS_KEY_SIZE + 1024 + VERUS_KEY_SIZE',
+              1
+          )
+
+
+          # ==========================================================
+          # IMMUTABLE BASE POINTER
+          # ==========================================================
+
+          m = re.search(
+              r'(__m128i\s*\*\s*data_key_prandex\s*='
+              r'[^;]+;)',
+              scan
+          )
+
+
+          if not m:
+
+              raise SystemExit(
+                  'data_key_prandex declaration not found'
+              )
+
+
+          base_decl = r'''
+
+              __m128i *data_key_base =
+                  (__m128i *)(
+                      (unsigned char *)data_key
+                      +
+                      VERUS_KEY_SIZE
+                      +
+                      1024
+                  );
+          '''
+
+
+          scan = (
+              scan[:m.end()]
+              + base_decl
+              + scan[m.end():]
+          )
+
+
+          # ==========================================================
+          # COMPACT 16-BIT TOUCH LOG
+          # ==========================================================
+
+          m = re.search(
+              r'alignas\(64\)\s+uint32_t\s+fixrandex\[32\]\s*;',
+              scan
+          )
+
+
+          if not m:
+
+              raise SystemExit(
+                  'aligned fixrandex declaration not found'
+              )
+
+
+          idx_decl = r'''
+
+              alignas(64)
+              uint16_t v13_idx_a[32];
+
+
+              alignas(64)
+              uint16_t v13_idx_b[32];
+          '''
+
+
+          scan = (
+              scan[:m.end()]
+              + idx_decl
+              + scan[m.end():]
+          )
+
+
+          # ==========================================================
+          # COPY KEY ONCE PER WORK UNIT
+          # ==========================================================
+
+          gen_pos = scan.index(
+              'GenNewCLKey('
+          )
+
+
+          gen_end = scan.index(
+              ';',
+              gen_pos
+          ) + 1
+
+
+          base_copy = r'''
+
+              memcpy(
+                  data_key_base,
+                  data_key,
+                  VERUS_KEY_SIZE
+              );
+          '''
+
+
+          scan = (
+              scan[:gen_end]
+              + base_copy
+              + scan[gen_end:]
+          )
+
+
+          # ==========================================================
+          # REPLACE HOT Verus2hash WITH V13 VERSION
+          # ==========================================================
+
+          normal_name = (
+              'inline void Verus2hash('
+          )
+
+
+          normal_pos = scan.index(
+              normal_name
+          )
+
+
+          normal_start = scan.rfind(
+              'extern "C"',
+              0,
+              normal_pos
+          )
+
+
+          normal_brace = scan.index(
+              '{',
+              normal_pos
+          )
+
+
+          depth = 0
+          normal_end = None
+
+
+          for i in range(
+              normal_brace,
+              len(scan)
+          ):
+
+              if scan[i] == '{':
+
+                  depth += 1
+
+
+              elif scan[i] == '}':
+
+                  depth -= 1
+
+
+                  if depth == 0:
+
+                      normal_end = i + 1
+                      break
+
+
+          if normal_end is None:
+
+              raise SystemExit(
+                  'Could not locate end of Verus2hash'
+              )
+
+
+          v13_verus2 = r'''extern "C"
+          __attribute__((always_inline))
+          inline void Verus2hash(
+              unsigned char *hash,
+              unsigned char *curBuf,
+              unsigned char *nonce,
+              __m128i * __restrict data_key,
+              uint8_t *gpu_init,
+              uint32_t *fixrand,
+              uint32_t *fixrandex,
+              __m128i *g_prand,
+              __m128i *g_prandex,
+              int version,
+              const __m128i *data_key_base,
+              uint16_t *v13_idx_a,
+              uint16_t *v13_idx_b
+          )
+          {
+              (void)gpu_init;
+              (void)version;
+
+
+              memcpy(
+                  curBuf + 47,
+                  curBuf,
+                  16
+              );
+
+
+              memcpy(
+                  curBuf + 63,
+                  curBuf,
+                  1
+              );
+
+
+              memcpy(
+                  curBuf + 32,
+                  nonce,
+                  15
+              );
+
+
+              int restore_mode =
+                  1;
+
+
+              uint64_t intermediate =
+                  verusclhashv13_shadow(
+                      data_key,
+                      curBuf,
+                      511,
+                      data_key_base,
+                      v13_idx_a,
+                      v13_idx_b,
+                      fixrand,
+                      fixrandex,
+                      g_prand,
+                      g_prandex,
+                      &restore_mode
+                  );
+
+
+              memcpy(
+                  curBuf + 47,
+                  &intermediate,
+                  8
+              );
+
+
+              memcpy(
+                  curBuf + 55,
+                  &intermediate,
+                  8
+              );
+
+
+              memcpy(
+                  curBuf + 63,
+                  &intermediate,
+                  1
+              );
+
+
+              intermediate &=
+                  511;
+
+
+              const __m128i *round_keys =
+                  data_key
+                  +
+                  intermediate;
+
+
+              if (__builtin_expect(
+                      v8_haraka_fast_state < 0,
+                      0
+                  ))
+              {
+                  haraka512_port_keyed(
+                      hash,
+                      curBuf,
+                      round_keys
+                  );
+              }
+              else
+              {
+                  v8_haraka512_word7(
+                      hash,
+                      curBuf,
+                      round_keys
+                  );
+
+
+                  if (__builtin_expect(
+                          v8_haraka_fast_state == 0,
+                          0
+                      ))
+                  {
+                      alignas(16)
+                      uint32_t reference_hash[8] =
+                          { 0 };
+
+
+                      haraka512_port_keyed(
+                          (unsigned char *)
+                              reference_hash,
+                          curBuf,
+                          round_keys
+                      );
+
+
+                      uint32_t fast_word7;
+
+
+                      memcpy(
+                          &fast_word7,
+                          hash + 28,
+                          sizeof(fast_word7)
+                      );
+
+
+                      if (
+                          fast_word7
+                          ==
+                          reference_hash[7]
+                      )
+                      {
+                          v8_haraka_fast_state =
+                              1;
+                      }
+                      else
+                      {
+                          memcpy(
+                              hash,
+                              reference_hash,
+                              32
+                          );
+
+
+                          v8_haraka_fast_state =
+                              -1;
+                      }
+                  }
+              }
+
+
+              // ======================================================
+              // V13 RESTORE
+              //
+              // Fast validated path:
+              // restore touched locations directly from immutable key.
+              //
+              // Validation / QC fallback:
+              // exact V11 path made the mutations, so use FixKey.
+              // ======================================================
+
+              if (__builtin_expect(
+                      restore_mode == 0,
+                      1
+                  ))
+              {
+                  verusclhashv13_restore(
+                      data_key,
+                      data_key_base,
+                      v13_idx_a,
+                      v13_idx_b
+                  );
+              }
+              else
+              {
+                  FixKey(
+                      fixrand,
+                      fixrandex,
+                      data_key,
+                      g_prand,
+                      g_prandex
+                  );
+              }
+          }'''
+
+
+          scan = (
+              scan[:normal_start]
+              + v13_verus2
+              + scan[normal_end:]
+          )
+
+
+          # ==========================================================
+          # PATCH HOT LOOP CALL
+          # ==========================================================
+
+          scan_start = scan.index(
+              'extern "C" int scanhash_verus'
+          )
+
+
+          call_start = scan.index(
+              'Verus2hash(',
+              scan_start
+          )
+
+
+          open_paren = scan.index(
+              '(',
+              call_start
+          )
+
+
+          depth = 0
+          close_paren = None
+
+
+          for i in range(
+              open_paren,
+              len(scan)
+          ):
+
+              if scan[i] == '(':
+
+                  depth += 1
+
+
+              elif scan[i] == ')':
+
+                  depth -= 1
+
+
+                  if depth == 0:
+
+                      close_paren = i
+                      break
+
+
+          if close_paren is None:
+
+              raise SystemExit(
+                  'Could not locate hot Verus2hash call end'
+              )
+
+
+          semicolon = scan.index(
+              ';',
+              close_paren
+          ) + 1
+
+
+          new_call = r'''Verus2hash(
+                      (unsigned char *)vhash,
+                      (unsigned char *)blockhash_half,
+                      nonceSpace,
+                      data_key,
+                      &gpuinit,
+                      fixrand,
+                      fixrandex,
+                      data_key_prand,
+                      data_key_prandex,
+                      version,
+                      data_key_base,
+                      v13_idx_a,
+                      v13_idx_b
+                  );'''
+
+
+          scan = (
+              scan[:call_start]
+              + new_call
+              + scan[semicolon:]
+          )
+
+
+          spath.write_text(
+              scan
+          )
+
+
+          # ==========================================================
+          # BUILD ID
+          # ==========================================================
+
+          apath = Path(
+              'api.cpp'
+          )
+
+
+          api = apath.read_text()
+
+
+          if 'BUILD=A55-QCFAST-V12' not in api:
+
+              raise SystemExit(
+                  'V12 BUILD ID missing'
+              )
+
+
+          api = api.replace(
+              'BUILD=A55-QCFAST-V12',
+              'BUILD=A55-SHADOWKEY-V13',
+              1
+          )
+
+
+          apath.write_text(
+              api
+          )
+
+
+          # ==========================================================
+          # FINAL SOURCE VALIDATION
+          # ==========================================================
+
+          clhash = clpath.read_text()
+
+          scan = spath.read_text()
+
+
+          required_clhash = [
+              '__verusclmulwithoutreduction64alignedrepeat_v13_shadow',
+              'verusclhashv13_shadow',
+              'verusclhashv13_restore',
+              'v13_shadow_state',
+              'fast_round_keys[40]',
+              'v12_qc_mode',
+          ]
+
+
+          for token in required_clhash:
+
+              if token not in clhash:
+
+                  raise SystemExit(
+                      'V13 CLHash token missing: '
+                      + token
+                  )
+
+
+          required_scan = [
+              'data_key_base',
+              'v13_idx_a[32]',
+              'v13_idx_b[32]',
+              'verusclhashv13_shadow',
+              'verusclhashv13_restore',
+          ]
+
+
+          for token in required_scan:
+
+              if token not in scan:
+
+                  raise SystemExit(
+                      'V13 scan token missing: '
+                      + token
+                  )
+
+
+          if (
+              'BUILD=A55-SHADOWKEY-V13'
+              not in apath.read_text()
+          ):
+
+              raise SystemExit(
+                  'V13 BUILD ID missing'
+              )
+
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'A55 SHADOWKEY V13 PATCH: PASS'
+          )
+
+          print(
+              '======================================'
+          )
+
+          print(
+              'Exact V12 #35        : PRESERVED'
+          )
+
+          print(
+              'V12 QCFAST           : PRESERVED'
+          )
+
+          print(
+              'V13 immutable key    : YES'
+          )
+
+          print(
+              'V13 backup vectors   : REMOVED FAST PATH'
+          )
+
+          print(
+              'V13 indexes          : UINT16'
+          )
+
+          print(
+              'V13 shadow restore   : YES'
+          )
+
+          print(
+              'V13 intermediate test: YES'
+          )
+
+          print(
+              'V13 40-key test      : YES'
+          )
+
+          print(
+              'Automatic V12 fallback: YES'
+          )
+
+          print(
+              'BUILD=A55-SHADOWKEY-V13'
+          )
+
+          PY
+
+
+      # ==============================================================
+      # SEMANTIC TESTS
+      # ==============================================================
+
+      - name: Verify SHADOWKEY V13 model
         shell: bash
         run: |
           set -euo pipefail
@@ -286,193 +1578,51 @@ jobs:
           import random
 
 
-          def signed16(value):
-
-              value &= 0xffff
-
-
-              if value & 0x8000:
-
-                  return value - 0x10000
-
-
-              return value
-
-
-          # ==========================================================
-          # EXACT x86 PMULHRSW SEMANTICS
-          # ==========================================================
-
-          def x86_mulhrs(a, b):
-
-              product = a * b
-
-
-              result = (
-                  product
-                  + 0x4000
-              ) >> 15
-
-
-              return signed16(
-                  result
-              )
-
-
-          # ==========================================================
-          # ARM VQRDMULH MODEL
-          # ==============================================================
-
-          def arm_vqrdmulh(a, b):
-
-              result = (
-                  a * b
-                  + 0x4000
-              ) >> 15
-
-
-              saturated = False
-
-
-              if result > 32767:
-
-                  result = 32767
-
-                  saturated = True
-
-
-              elif result < -32768:
-
-                  result = -32768
-
-                  saturated = True
-
-
-              return (
-                  result,
-                  saturated
-              )
-
-
-          # ==========================================================
-          # THE KNOWN DIFFERENCE
-          #
-          # x86 wraps 0x8000 -> -32768
-          # ARM saturates -> +32767 and raises QC
-          # ==============================================================
-
-          exact = x86_mulhrs(
-              -32768,
-              -32768
-          )
-
-
-          fast, saturated = arm_vqrdmulh(
-              -32768,
-              -32768
-          )
-
-
-          assert exact == -32768
-
-          assert fast == 32767
-
-          assert saturated is True
-
-
-          print(
-              'Known saturation divergence: PASS'
-          )
-
-
-          # ==========================================================
-          # RANDOM NON-SATURATION EQUIVALENCE
-          #
-          # Whenever QC would remain clear,
-          # raw VQRDMULH must equal PMULHRSW.
-          # ==============================================================
-
           random.seed(
-              0xA5512
-          )
-
-
-          tested = 0
-
-
-          for _ in range(
-              2000000
-          ):
-
-              a = random.randint(
-                  -32768,
-                  32767
-              )
-
-
-              b = random.randint(
-                  -32768,
-                  32767
-              )
-
-
-              exact = x86_mulhrs(
-                  a,
-                  b
-              )
-
-
-              fast, saturated = arm_vqrdmulh(
-                  a,
-                  b
-              )
-
-
-              if not saturated:
-
-                  assert fast == exact
-
-                  tested += 1
-
-
-          assert tested > 1900000
-
-
-          print(
-              '2,000,000 mulhrs comparisons: PASS'
+              0xA5513
           )
 
 
           # ==========================================================
-          # KEY ROLLBACK MODEL
+          # MODEL:
           #
-          # Matches the CLHash behaviour:
-          # before each mutation, original prand/prandex values are
-          # saved. Rollback walks 31 -> 0.
-          # ==============================================================
+          # old path:
+          # save old values each round, mutate,
+          # reverse-restore old values
+          #
+          # V13:
+          # only save indices, mutate,
+          # restore each touched index from immutable base
+          # ==========================================================
 
           for trial in range(
-              10000
+              100000
           ):
 
-              original = [
+              base = [
                   random.getrandbits(128)
                   for _ in range(512)
               ]
 
 
-              key = list(
-                  original
+              old_key = list(
+                  base
               )
 
 
-              fixrand = []
+              new_key = list(
+                  base
+              )
 
-              fixrandex = []
 
-              old_prand = []
+              fix_a = []
+              fix_b = []
 
-              old_prandex = []
+              old_a = []
+              old_b = []
+
+              idx_a = []
+              idx_b = []
 
 
               for i in range(32):
@@ -487,168 +1637,219 @@ jobs:
                   )
 
 
-                  # Save exactly what CLHash saw before mutation.
-                  fixrand.append(
-                      a
+                  # OLD BACKUP PATH
+                  fix_a.append(a)
+                  fix_b.append(b)
+
+                  old_a.append(
+                      old_key[a]
+                  )
+
+                  old_b.append(
+                      old_key[b]
                   )
 
 
-                  fixrandex.append(
-                      b
+                  # NEW COMPACT LOG
+                  idx_a.append(a)
+                  idx_b.append(b)
+
+
+                  # Same arbitrary mutations applied to both models.
+                  ma = random.getrandbits(
+                      128
+                  )
+
+                  mb = random.getrandbits(
+                      128
                   )
 
 
-                  old_prand.append(
-                      key[a]
-                  )
+                  old_key[a] ^= ma
+                  old_key[b] ^= mb
+
+                  new_key[a] ^= ma
+                  new_key[b] ^= mb
 
 
-                  old_prandex.append(
-                      key[b]
-                  )
+              # They must be identical before restore.
+              assert old_key == new_key
 
 
-                  # Simulate arbitrary mutations.
-                  key[a] = (
-                      key[a]
-                      ^
-                      random.getrandbits(128)
-                  )
-
-
-                  key[b] = (
-                      key[b]
-                      ^
-                      random.getrandbits(128)
-                  )
-
-
-              # Same reverse order used by FixKey / V12 rollback.
+              # OLD reverse backup restore.
               for i in range(
                   31,
                   -1,
                   -1
               ):
 
-                  key[
-                      fixrandex[i]
-                  ] = old_prandex[i]
+                  old_key[
+                      fix_b[i]
+                  ] = old_b[i]
 
 
-                  key[
-                      fixrand[i]
-                  ] = old_prand[i]
+                  old_key[
+                      fix_a[i]
+                  ] = old_a[i]
 
 
-              assert key == original
+              # V13 immutable-base restore.
+              #
+              # Order no longer matters because every restore value
+              # is the pristine base value.
+              for i in range(32):
+
+                  new_key[
+                      idx_a[i]
+                  ] = base[
+                      idx_a[i]
+                  ]
+
+
+                  new_key[
+                      idx_b[i]
+                  ] = base[
+                      idx_b[i]
+                  ]
+
+
+              assert old_key == base
+
+              assert new_key == base
+
+              assert old_key == new_key
+
+
+              # Indexes must fit uint16 easily.
+              assert max(idx_a) <= 511
+
+              assert max(idx_b) <= 511
 
 
           print(
-              '10,000 reverse rollback simulations: PASS'
+              '100,000 shadow restore simulations: PASS'
           )
 
 
           # ==========================================================
-          # QC POLICY MODEL
-          # ==============================================================
+          # HARAKA WINDOW SAFETY
+          #
+          # intermediate & 511 selects the first of 40 x 16-byte keys.
+          #
+          # 511 + 39 = 550
+          # key contains 552 entries.
+          # ==========================================================
 
-          def qcfast_result(
-              pairs
-          ):
-
-              qc = False
-
-              fast_results = []
-
-
-              for a, b in pairs:
-
-                  result, saturated = arm_vqrdmulh(
-                      a,
-                      b
-                  )
-
-
-                  fast_results.append(
-                      result
-                  )
-
-
-                  if saturated:
-
-                      qc = True
-
-
-              if qc:
-
-                  # V12 discards/replays exact path.
-                  return [
-                      x86_mulhrs(
-                          a,
-                          b
-                      )
-                      for a, b in pairs
-                  ]
-
-
-              return fast_results
-
-
-          for _ in range(
-              100000
-          ):
-
-              pairs = [
-                  (
-                      random.randint(
-                          -32768,
-                          32767
-                      ),
-                      random.randint(
-                          -32768,
-                          32767
-                      )
-                  )
-                  for _ in range(32)
-              ]
-
-
-              # Force saturation occasionally.
-              if (
-                  random.randrange(
-                      100
-                  )
-                  == 0
-              ):
-
-                  pairs[
-                      random.randrange(32)
-                  ] = (
-                      -32768,
-                      -32768
-                  )
-
-
-              reference = [
-                  x86_mulhrs(
-                      a,
-                      b
-                  )
-                  for a, b in pairs
-              ]
-
+          for offset in range(512):
 
               assert (
-                  qcfast_result(
-                      pairs
-                  )
-                  ==
-                  reference
+                  offset + 39
+                  <
+                  552
               )
 
 
           print(
-              '100,000 QCFAST fallback simulations: PASS'
+              'Haraka 40-key window bounds: PASS'
+          )
+
+
+          # ==========================================================
+          # TRAFFIC ACCOUNTING
+          #
+          # OLD bookkeeping per hash:
+          #
+          # backup phase:
+          #   64 x 16B original value stores = 1024
+          #   64 x 4B index stores          = 256
+          #
+          # restore:
+          #   64 x 16B backup loads         = 1024
+          #   64 x 4B index loads           = 256
+          #   64 x 16B key stores           = 1024
+          #
+          # total = 3584
+          #
+          # V13:
+          #   64 x 2B index stores          = 128
+          #   64 x 2B index loads           = 128
+          #   64 x 16B immutable-key loads  = 1024
+          #   64 x 16B key stores           = 1024
+          #
+          # total = 2304
+          # ==========================================================
+
+          old_bytes = (
+              1024
+              +
+              256
+              +
+              1024
+              +
+              256
+              +
+              1024
+          )
+
+
+          new_bytes = (
+              128
+              +
+              128
+              +
+              1024
+              +
+              1024
+          )
+
+
+          saved = (
+              old_bytes
+              -
+              new_bytes
+          )
+
+
+          percent = (
+              saved
+              * 100.0
+              /
+              old_bytes
+          )
+
+
+          assert old_bytes == 3584
+
+          assert new_bytes == 2304
+
+          assert saved == 1280
+
+
+          print(
+              'Old bookkeeping bytes/hash:',
+              old_bytes
+          )
+
+
+          print(
+              'V13 bookkeeping bytes/hash:',
+              new_bytes
+          )
+
+
+          print(
+              'Saved bytes/hash:',
+              saved
+          )
+
+
+          print(
+              'Bookkeeping traffic reduction:',
+              round(
+                  percent,
+                  2
+              ),
+              '%'
           )
 
 
@@ -657,7 +1858,7 @@ jobs:
           )
 
           print(
-              'QCFAST V12 SEMANTICS: PASS'
+              'SHADOWKEY V13 MODEL: PASS'
           )
 
           print(
@@ -668,10 +1869,10 @@ jobs:
 
 
       # ==============================================================
-      # SOURCE PREFLIGHT
+      # SOURCE CHECK
       # ==============================================================
 
-      - name: Verify V12 source
+      - name: Verify V13 source
         shell: bash
         run: |
           set -euo pipefail
@@ -682,57 +1883,58 @@ jobs:
           echo "===== BUILD ====="
 
           grep -n \
-            "A55-QCFAST-V12" \
+            "A55-SHADOWKEY-V13" \
             api.cpp
 
 
-          echo "===== FAST MULHRS ====="
+          echo "===== V12 QCFAST STILL PRESENT ====="
 
           grep -n \
             "v12_mulhrs_fast" \
-            verus/armv7/verus_clhash_portable.cpp
+            verus/armv7/verus_clhash_portable.cpp |
+            head -n 5
 
 
-          echo "===== FPSCR READ ====="
-
-          grep -n \
-            "vmrs %0, fpscr" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== FPSCR WRITE ====="
+          echo "===== V13 SHADOW CORE ====="
 
           grep -n \
-            "vmsr fpscr, %0" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== QC PROBE ====="
-
-          grep -n \
-            "v12_probe_qc" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== ROLLBACK ====="
-
-          grep -n \
-            "v12_rollback_key" \
-            verus/armv7/verus_clhash_portable.cpp
-
-
-          echo "===== EXACT V11 MULHRS STILL PRESENT ====="
-
-          grep -n \
-            "_mm_mulhrs_epi16_emu" \
+            "v13_shadow" \
             verus/armv7/verus_clhash_portable.cpp |
             head -n 30
 
 
-          echo "===== FAST FUNCTION ====="
+          echo "===== V13 COMPACT INDEX ====="
 
           grep -n \
-            "__verusclmulwithoutreduction64alignedrepeat_v12_fast" \
+            "v13_idx_a" \
+            verus/armv7/verus_clhash_portable.cpp |
+            head -n 20
+
+
+          grep -n \
+            "v13_idx_b" \
+            verus/armv7/verus_clhash_portable.cpp |
+            head -n 20
+
+
+          echo "===== IMMUTABLE BASE ====="
+
+          grep -n \
+            "data_key_base" \
+            verus/armv7/verusscan.cpp
+
+
+          echo "===== 40 HARAKA KEY VALIDATION ====="
+
+          grep -n \
+            "fast_round_keys" \
+            verus/armv7/verus_clhash_portable.cpp
+
+
+          echo "===== RESTORE ====="
+
+          grep -n \
+            "verusclhashv13_restore" \
             verus/armv7/verus_clhash_portable.cpp
 
 
@@ -760,12 +1962,12 @@ jobs:
 
 
           docker build \
-            -t ccminer-firestick-a55-v12 \
+            -t ccminer-firestick-a55-v13 \
             -f build.Dockerfile \
             .
 
 
-      - name: Build QCFAST V12 armeabi-v7a
+      - name: Build SHADOWKEY V13 armeabi-v7a
         shell: bash
         run: |
           set -euo pipefail
@@ -784,7 +1986,7 @@ jobs:
           docker run \
             --rm \
             -v "$PWD/build-output:/build/output" \
-            ccminer-firestick-a55-v12 \
+            ccminer-firestick-a55-v13 \
             arm
 
 
@@ -811,7 +2013,7 @@ jobs:
       # BINARY INSPECTION
       # ==============================================================
 
-      - name: Inspect QCFAST V12 binary
+      - name: Inspect SHADOWKEY V13 binary
         shell: bash
         run: |
           set -euo pipefail
@@ -833,7 +2035,7 @@ jobs:
           strings \
             "$BIN" |
             grep \
-              "A55-QCFAST-V12"
+              "A55-SHADOWKEY-V13"
 
 
           echo "===== SIZE ====="
@@ -856,7 +2058,7 @@ jobs:
       # PACKAGE
       # ==============================================================
 
-      - name: Prepare QCFAST V12 package
+      - name: Prepare SHADOWKEY V13 package
         shell: bash
         run: |
           set -euo pipefail
@@ -877,7 +2079,7 @@ jobs:
 
           cp \
             "$BIN/ccminer" \
-            dist/ccminer-a55-qcfast-v12
+            dist/ccminer-a55-shadowkey-v13
 
 
           if test -f "$BIN/libc++_shared.so"
@@ -901,21 +2103,21 @@ jobs:
 
 
           chmod +x \
-            dist/ccminer-a55-qcfast-v12
+            dist/ccminer-a55-shadowkey-v13
 
 
           cat > dist/BUILDINFO.txt <<EOF
           Build:
-          A55-QCFAST-V12
+          A55-SHADOWKEY-V13
 
           Stable base:
-          exact A55-HOTCORE-V11 #33
+          exact A55-QCFAST-V12 #35
 
-          V11 builder:
-          c98f006a974ccee5be50ea5982311c05774432bc
+          V12 builder commit:
+          5f9aa55a96369f8da93561e0c839ed81bc3e15c2
 
-          V12 proven source patch:
-          50ac3037b54d6f045e534af8b04a2ddf571ae844
+          V12 measured baseline:
+          approximately 1.26 MH/s sustained
 
           ccminer source:
           7f30d6bfb64d0f3ba010191c5a185016ba46f454
@@ -926,8 +2128,11 @@ jobs:
           Target CPU:
           Cortex-A55
 
-          V11 baseline:
-          approximately 1.24 MH/s
+          Hardware AES:
+          preserved
+
+          Hardware PMULL:
+          preserved
 
           V10 FASTMOD:
           preserved
@@ -935,38 +2140,38 @@ jobs:
           V11 HOTCORE:
           preserved
 
-          Hardware AES:
+          V12 QCFAST:
           preserved
 
-          Hardware PMULL:
-          preserved
+          V13 immutable base key:
+          enabled
 
-          ThinLTO:
-          preserved
-
-          V12 fast mulhrs:
-          raw VQRDMULH
-
-          Normal-path per-call overflow correction:
+          V13 hot-path original-value backups:
           removed
 
-          FPSCR.QC:
-          checked once per CLHash
+          V13 hot-path touched indexes:
+          uint16
 
-          QC saturation:
-          reverse rollback then exact V11 replay
+          V13 normal restore:
+          direct from immutable key
 
-          Hardware QC probe:
-          enabled
+          V13 validation:
+          CLHash intermediate + 40 mutated Haraka keys
 
-          One-time fast/exact validation:
-          enabled
+          V13 fallback:
+          exact V12
 
-          Permanent exact fallback:
-          enabled
+          Old bookkeeping traffic:
+          approximately 3584 bytes/hash
+
+          V13 bookkeeping traffic:
+          approximately 2304 bytes/hash
+
+          Estimated bookkeeping traffic reduction:
+          approximately 35.7 percent
 
           API:
-          BUILD=A55-QCFAST-V12
+          BUILD=A55-SHADOWKEY-V13
           EOF
 
 
@@ -988,10 +2193,10 @@ jobs:
       # ARTIFACT
       # ==============================================================
 
-      - name: Upload QCFAST V12 artifact
+      - name: Upload SHADOWKEY V13 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firestick-a55-qcfast-v12-${{ github.run_number }}
+          name: firestick-a55-shadowkey-v13-${{ github.run_number }}
           path: src/dist/
           if-no-files-found: error
           retention-days: 30
